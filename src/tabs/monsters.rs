@@ -1,7 +1,19 @@
 use crate::app::ResalinatedApp;
 use eframe::egui;
-use egui::{Ui, Color32};
+use egui::{Color32, Ui};
 use sas2_save::monster_catalog::{MonsterDef, MonsterFieldValue};
+use std::collections::HashMap;
+
+fn add_monster_label(ui: &mut Ui, title: &str, font_size: f32) {
+    for word in title.split_whitespace() {
+        ui.add(
+            egui::Label::new(egui::RichText::new(word).size(font_size))
+                .wrap_mode(egui::TextWrapMode::Truncate)
+                .halign(egui::Align::Center)
+                .show_tooltip_when_elided(false),
+        );
+    }
+}
 
 pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
     if app.working_monster_catalog.is_none() {
@@ -44,9 +56,11 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
         app.config.save();
     }
 
-    // Central panel: search + list
+    // Central panel: search + list with icons
     egui::CentralPanel::default().show_inside(ui, |ui| {
         ui.set_min_width(200.0);
+
+        // search & checkbox
         ui.horizontal(|ui| {
             ui.label("Search:");
             ui.text_edit_singleline(&mut app.monster_search_filter);
@@ -56,7 +70,9 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
 
         let filter = app.monster_search_filter.to_lowercase();
         let vanilla = app.vanilla_monster_catalog.as_ref();
-        let items: Vec<(usize, &MonsterDef)> = app.working_monster_catalog
+
+        // Build filtered list
+        let filtered: Vec<(usize, &MonsterDef)> = app.working_monster_catalog
             .as_ref().unwrap().monsters.iter().enumerate()
             .filter(|(_, d)| {
                 let matches = d.name.to_lowercase().contains(&filter)
@@ -73,14 +89,61 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
             })
             .collect();
 
-        egui::ScrollArea::vertical().auto_shrink([false;2]).show(ui, |ui| {
-            for (idx, def) in items {
-                let is_selected = app.selected_monster_idx == Some(idx);
-                if ui.selectable_label(is_selected, &def.name).clicked() {
-                    app.selected_monster_idx = Some(idx);
+        // Group by type‑subtype
+        let mut grouped: HashMap<String, Vec<(usize, &MonsterDef)>> = HashMap::new();
+        for (idx, def) in filtered {
+            let cat = format!("Type {} - SubType {}", def.type_, def.sub_type);
+            grouped.entry(cat).or_default().push((idx, def));
+        }
+        let mut categories: Vec<_> = grouped.keys().cloned().collect();
+        categories.sort();
+
+        egui::ScrollArea::both()
+            .auto_shrink([false; 2])
+            .show(ui, |ui| {
+                for cat in categories {
+                    let entries = grouped.get(&cat).unwrap();
+                    ui.style_mut().interaction.selectable_labels = false;
+                    ui.label(egui::RichText::new(&cat).strong());
+
+                    egui::Grid::new(&cat).spacing([8.0, 8.0]).show(ui, |ui| {
+                        for (orig_idx, def) in entries {
+                            ui.vertical(|ui| {
+                                let tex = if def.texture.is_empty() {
+                                    None
+                                } else {
+                                    app.monster_texture_cache.get_or_load(&def.texture)
+                                };
+                                let response = if let Some(tex) = &tex {
+                                    // Calculate UV for the first 128x128 frame
+                                    let size = tex.size_vec2();          // TextureHandle knows its pixel size
+                                    let uv = crate::atlas::monster_idle_uv(size[0] as u32, size[1] as u32);
+                                    ui.add(egui::Button::image(
+                                        egui::Image::from_texture(tex)
+                                            .fit_to_exact_size(egui::vec2(app.config.item_icon_size, app.config.item_icon_size))
+                                            .uv(uv),
+                                    ))
+                                } else {
+                                    // placeholder while loading
+                                    ui.allocate_response(egui::vec2(app.config.item_icon_size, app.config.item_icon_size), egui::Sense::click())
+                                };
+                                let btn_w = response.rect.width();
+                                if response.clicked() {
+                                    app.selected_monster_idx = Some(*orig_idx);
+                                }
+                                ui.set_max_width(btn_w);
+                                let display_name = def.titles.first()
+                                    .filter(|t| !t.is_empty())
+                                    .cloned()
+                                    .unwrap_or_else(|| def.name.clone());
+                                add_monster_label(ui, &display_name, app.config.item_font_size);
+                            });
+                        }
+                    });
+
+                    ui.add_space(8.0);
                 }
-            }
-        });
+            });
     });
 }
 

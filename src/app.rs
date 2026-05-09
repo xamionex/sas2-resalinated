@@ -6,7 +6,7 @@ use eframe::egui;
 use sas2_save::loot_catalog::LootCatalog;
 use std::path::PathBuf;
 use sas2_save::monster_catalog::MonsterCatalog;
-use crate::atlas::ItemAtlas;
+use crate::atlas::{ItemAtlas, MonsterTextureCache};
 
 pub struct ResalinatedApp {
     pub config: ResalinatedConfig,
@@ -36,6 +36,7 @@ pub struct ResalinatedApp {
     pub monster_search_filter: String,
     pub show_only_changed_monsters: bool,
     pub item_atlas: Option<ItemAtlas>,
+    pub monster_texture_cache: MonsterTextureCache,
     pub settings_open: bool,
 }
 
@@ -72,15 +73,24 @@ impl Default for ResalinatedApp {
             monster_search_filter: String::new(),
             show_only_changed_monsters: false,
             item_atlas: None,
+            monster_texture_cache: MonsterTextureCache::new(),
             settings_open: false,
         };
         if let Some(ref gp) = app.game_path {
             app.preset_manager.set_game_path(gp);
+            let gp_clone = gp.clone();
             if let Err(e) = app.load_vanilla_catalog() {
                 app.error_message = Some(e);
             }
             if let Err(e) = app.load_vanilla_monster_catalog() {
                 app.error_message = Some(e);
+            }
+            if let Some(ref cat) = app.working_monster_catalog {
+                let names: Vec<String> = cat.monsters.iter()
+                    .filter(|m| !m.texture.is_empty())
+                    .map(|m| m.texture.clone())
+                    .collect();
+                app.monster_texture_cache.start_preload(&gp_clone, names);
             }
         }
         app
@@ -121,6 +131,13 @@ impl ResalinatedApp {
         }
         if let Err(e) = self.load_vanilla_monster_catalog() {
             self.error_message = Some(e);
+        }
+        if let Some(ref cat) = self.working_monster_catalog {
+            let names: Vec<String> = cat.monsters.iter()
+                .filter(|m| !m.texture.is_empty())
+                .map(|m| m.texture.clone())
+                .collect();
+            self.monster_texture_cache.start_preload(&path, names);
         }
     }
 
@@ -481,6 +498,15 @@ impl ResalinatedApp {
 }
 
 impl eframe::App for ResalinatedApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        //if self.active_tab == Tab::Monsters {
+        self.monster_texture_cache.update(ctx);
+        if self.monster_texture_cache.is_loading() {
+            ctx.request_repaint();
+        }
+        //}
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         if self.item_atlas.is_none() {
             if let Some(ref gp) = self.game_path {
@@ -540,6 +566,15 @@ impl eframe::App for ResalinatedApp {
                 ui.selectable_value(&mut self.active_tab, Tab::Items, "Items");
                 ui.selectable_value(&mut self.active_tab, Tab::Monsters, "Monsters");
                 ui.selectable_value(&mut self.active_tab, Tab::Manager, "Manager");
+
+                ui.vertical(|ui| {
+                    // progress bar while textures are loading
+                    if let Some((loaded, total)) = self.monster_texture_cache.progress() {
+                        let fraction = loaded as f32 / total as f32;
+                        ui.add(egui::ProgressBar::new(fraction.min(1.0)).show_percentage());
+                        ui.label(format!("{}/{} textures loaded…", loaded, total));
+                    }
+                });
             });
 
             ui.separator();
