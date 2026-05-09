@@ -3,9 +3,9 @@ use crate::config::{default_drag_sensitivity, default_item_font_size, default_it
 use crate::preset::{PresetManager, PresetMeta};
 use crate::tabs::{items, manager, monsters, preset_info, Tab};
 use eframe::egui;
-use sas2_save::loot_catalog::LootCatalog;
+use sas2_parser::loot_catalog::LootCatalog;
 use std::path::PathBuf;
-use sas2_save::monster_catalog::MonsterCatalog;
+use sas2_parser::monster_catalog::MonsterCatalog;
 use crate::atlas::{ItemAtlas, MonsterTextureCache};
 
 pub struct ResalinatedApp {

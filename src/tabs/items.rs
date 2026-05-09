@@ -3,8 +3,8 @@ use crate::app::ResalinatedApp;
 use crate::atlas::ItemAtlas;
 use eframe::egui;
 use egui::{Ui, Color32, Response};
-use sas2_save::loot_catalog::{LootDef, LootFieldValue};
-use sas2_save::loot_names;
+use sas2_parser::loot_catalog::{LootDef, LootFieldValue};
+use sas2_parser::loot_names;
 
 /// Draw one icon button from the atlas.
 /// If either the atlas or the def is missing (or the def has no icon), an invisible placeholder of the same size is rendered so the grid columns stay aligned.

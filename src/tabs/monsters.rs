@@ -1,7 +1,7 @@
 use crate::app::ResalinatedApp;
 use eframe::egui;
 use egui::{Color32, Ui};
-use sas2_save::monster_catalog::{MonsterDef, MonsterFieldValue};
+use sas2_parser::monster_catalog::{MonsterDef, MonsterFieldValue};
 use std::collections::HashMap;
 
 fn add_monster_label(ui: &mut Ui, title: &str, font_size: f32) {

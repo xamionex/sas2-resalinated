@@ -36,10 +36,10 @@ fn main() -> eframe::Result<()> {
 
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--hide-lootdef-logging") {
-        sas2_save::set_loot_logging_enabled(false);
+        sas2_parser::set_loot_logging_enabled(false);
     }
     if args.iter().any(|a| a == "--hide-monster-logging") {
-        sas2_save::set_monster_logging_enabled(false);
+        sas2_parser::set_monster_logging_enabled(false);
     }
 
     let options = eframe::NativeOptions::default();

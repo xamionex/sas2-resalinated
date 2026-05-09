@@ -1,6 +1,6 @@
 use egui::{pos2, Rect, TextureHandle};
-use sas2_save::loot_catalog::LootDef;
-use sas2_save::xnb_loader::load_texture_from_path;
+use sas2_parser::loot_catalog::LootDef;
+use sas2_parser::xnb_loader::load_texture_from_path;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::mpsc;

@@ -4,7 +4,7 @@ version = "1.0.1"
 edition = "2024"
 
 [dependencies]
-sas2-save = { git = "https://github.com/xamionex/sas2-save.git" }
+sas2-parser = { git = "https://github.com/xamionex/sas2-parser.git" }
 eframe = "0.34.0"
 rfd = "0.17.2"
 serde = { version = "1.0", features = ["derive"] }
