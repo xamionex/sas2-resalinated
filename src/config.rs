@@ -1,0 +1,86 @@
+use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::PathBuf;
+
+#[derive(Serialize, Deserialize)]
+pub struct ResalinatedConfig {
+    #[serde(default)]
+    pub game_path: Option<PathBuf>,
+
+    /// Right panel width in the Items tab (editing area).
+    #[serde(default)]
+    pub items_details_panel_width: f32,
+
+    #[serde(default)]
+    pub monsters_details_panel_width: f32,
+
+    /// Manager tab: left panel (available presets) width.
+    #[serde(default)]
+    pub manager_left_panel_width: f32,
+
+    #[serde(default = "default_item_icon_size")]
+    pub item_icon_size: f32,
+
+    #[serde(default = "default_item_font_size")]
+    pub item_font_size: f32,
+
+    #[serde(default = "default_drag_sensitivity")]
+    pub drag_value_sensitivity: f32,
+
+    #[serde(default)]
+    pub dummy_drag_value: f32,
+}
+
+impl Default for ResalinatedConfig {
+    fn default() -> Self {
+        Self {
+            game_path: None,
+            items_details_panel_width: 0.0,
+            manager_left_panel_width: 0.0,
+            monsters_details_panel_width: 0.0,
+            item_icon_size: default_item_icon_size(),
+            item_font_size: default_item_font_size(),
+            drag_value_sensitivity: default_drag_sensitivity(),
+            dummy_drag_value: 0.0,
+        }
+    }
+}
+
+pub fn default_item_icon_size() -> f32 {
+    52.0
+}
+pub fn default_item_font_size() -> f32 {
+    12.0
+}
+pub fn default_drag_sensitivity() -> f32 {
+    0.025
+}
+
+impl ResalinatedConfig {
+    pub fn load() -> Self {
+        let config_path = Self::config_path();
+        if let Ok(data) = fs::read_to_string(&config_path) {
+            if let Ok(cfg) = serde_json::from_str(&data) {
+                return cfg;
+            }
+        }
+        Self::default()
+    }
+
+    pub fn save(&self) {
+        let config_path = Self::config_path();
+        if let Some(parent) = config_path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        if let Ok(json) = serde_json::to_string_pretty(self) {
+            let _ = fs::write(config_path, json);
+        }
+    }
+
+    fn config_path() -> PathBuf {
+        dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("sas2-resalinated")
+            .join("config.json")
+    }
+}

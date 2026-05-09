@@ -1,0 +1,15 @@
+[package]
+name = "sas2-resalinated"
+version = "1.0.0"
+edition = "2024"
+
+[dependencies]
+sas2-save = { git = "https://github.com/xamionex/sas2-save.git" }
+eframe = "0.34.0"
+rfd = "0.17.2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+hide_console = "0.2.1"
+egui = "0.34.1"
+zip = "9.0.0-pre1"
+dirs = "6.0.0"

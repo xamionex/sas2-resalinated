@@ -1,0 +1,107 @@
+name: Build
+
+on:
+  push:
+    branches: [ "main" ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ "main" ]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            zig_target: x86_64-unknown-linux-gnu.2.28 
+            platform: linux
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            platform: windows
+            bin: ".exe"
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            platform: macos
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Rust Cache
+        uses: swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.13.0
+
+      - name: Install cargo-zigbuild
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild
+
+      - name: Build release
+        run: cargo zigbuild --release --target ${{ matrix.zig_target || matrix.target }}
+
+      - name: Strip binary
+        if: matrix.platform != 'windows'
+        run: strip "target/${{ matrix.target }}/release/${{ github.event.repository.name }}"
+
+      - name: Package Standard ZIP (Ultra Compression)
+        shell: pwsh
+        run: |
+          $name = "${{ github.event.repository.name }}"
+          $binName = if ("${{ matrix.platform }}" -eq "windows") { "$name.exe" } else { "$name" }
+          $binPath = "target/${{ matrix.target }}/release/$binName"
+          $zipName = "$name-${{ matrix.platform }}.zip"
+
+          mkdir staging
+          Copy-Item $binPath -Destination "staging/$binName"
+          
+          # Include README/LICENSE if they exist for NexusMods users
+          Get-ChildItem -Path "." -Include "README*", "LICENSE*" | Copy-Item -Destination "staging/"
+
+          cd staging
+          # 7z creates a standard ZIP that anyone can open without 7-Zip installed
+          7z a -tzip -mx=9 -mpass=15 "../$zipName" *
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ matrix.platform }}-binaries
+          path: "*.zip"
+
+  release:
+    name: Publish Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: ./dist
+          pattern: "*-binaries"
+          merge-multiple: true
+
+      - name: Publish Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('build-{0}', github.sha) }}
+          name: "Release: ${{ github.ref_name || github.sha }}"
+          files: ./dist/*.zip
+          prerelease: ${{ !startsWith(github.ref, 'refs/tags/') }}
+          generate_release_notes: true
