@@ -1,12 +1,14 @@
-use std::collections::HashMap;
+use crate::atlas::{ItemAtlas, MonsterTextureCache};
+use crate::catalog::{load_loot_catalog, load_monster_catalog};
 use crate::config::{default_drag_sensitivity, default_item_font_size, default_item_icon_size, ResalinatedConfig};
 use crate::preset::{PresetManager, PresetMeta};
 use crate::tabs::{items, manager, monsters, preset_info, Tab};
 use eframe::egui;
+use rfd::FileDialog;
 use sas2_parser::loot_catalog::LootCatalog;
-use std::path::PathBuf;
 use sas2_parser::monster_catalog::MonsterCatalog;
-use crate::atlas::{ItemAtlas, MonsterTextureCache};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 pub struct ResalinatedApp {
     pub config: ResalinatedConfig,
@@ -38,6 +40,9 @@ pub struct ResalinatedApp {
     pub item_atlas: Option<ItemAtlas>,
     pub monster_texture_cache: MonsterTextureCache,
     pub settings_open: bool,
+    pub catalog_error: Option<String>,
+    pub monster_catalog_error: Option<String>,
+    pub config_save_timer: f32,
 }
 
 impl Default for ResalinatedApp {
@@ -51,7 +56,7 @@ impl Default for ResalinatedApp {
             working_catalog: None,
             game_path,
             preset_manager: PresetManager::new(),
-            active_tab: Tab::Items,
+            active_tab: Tab::Manager,
             selected_item_idx: None,
             search_filter: String::new(),
             edit_folder_name: String::new(),
@@ -75,69 +80,73 @@ impl Default for ResalinatedApp {
             item_atlas: None,
             monster_texture_cache: MonsterTextureCache::new(),
             settings_open: false,
+            catalog_error: None,
+            monster_catalog_error: None,
+            config_save_timer: 0.0,
         };
-        if let Some(ref gp) = app.game_path {
-            app.preset_manager.set_game_path(gp);
-            let gp_clone = gp.clone();
-            if let Err(e) = app.load_vanilla_catalog() {
-                app.error_message = Some(e);
-            }
-            if let Err(e) = app.load_vanilla_monster_catalog() {
-                app.error_message = Some(e);
-            }
-            if let Some(ref cat) = app.working_monster_catalog {
-                let names: Vec<String> = cat.monsters.iter()
-                    .filter(|m| !m.texture.is_empty())
-                    .map(|m| m.texture.clone())
-                    .collect();
-                app.monster_texture_cache.start_preload(&gp_clone, names);
-            }
+
+        // Load catalogs immediately if we already have a game path stored
+        // Textures load in app.ui()
+        if let Some(game_path) = &app.config.game_path.clone() {
+            app.load_catalogs(game_path);
         }
         app
     }
 }
 
 impl ResalinatedApp {
-    pub fn load_vanilla_monster_catalog(&mut self) -> Result<(), String> {
-        let path = self.game_path.as_ref().ok_or("Game folder not set")?;
-        let m_path = path.join("Monsters").join("data").join("monsters.zms");
-        let data = std::fs::read(&m_path).map_err(|e| e.to_string())?;
-        let catalog = MonsterCatalog::load_from_bytes(&data).map_err(|e| e.to_string())?;
-        self.vanilla_monster_catalog = Some(catalog.clone());
-        self.working_monster_catalog = Some(catalog);
-        Ok(())
+    /// Load (or reload) all three catalogs from `game_path`.
+    fn load_catalogs(&mut self, game_path: &Path) {
+        self.preset_manager.set_game_path(&game_path);
+
+        match load_loot_catalog(game_path) {
+            Ok(cat) => {
+                self.vanilla_catalog = Some(cat.clone());
+                self.working_catalog = Some(cat.clone());
+                self.catalog_error = None;
+            }
+            Err(e) => {
+                self.vanilla_catalog = None;
+                self.working_catalog = None;
+                self.catalog_error = Some(e);
+            }
+        }
+        match load_monster_catalog(game_path) {
+            Ok(cat) => {
+                self.vanilla_monster_catalog = Some(cat.clone());
+                self.working_monster_catalog = Some(cat.clone());
+                self.monster_catalog_error = None;
+
+                // start background texture loading
+                let names: Vec<String> = cat.monsters.iter()
+                    .filter(|m| !m.texture.is_empty())
+                    .map(|m| m.texture.clone())
+                    .collect();
+                self.monster_texture_cache.set_game_path(game_path);
+                self.monster_texture_cache.start_preload(game_path, names);
+            }
+            Err(e) => {
+                self.vanilla_monster_catalog = None;
+                self.working_monster_catalog = None;
+                self.monster_catalog_error = Some(e);
+            }
+        }
     }
 
-    pub fn load_vanilla_catalog(&mut self) -> Result<(), String> {
-        let path = self.game_path.as_ref().ok_or("Game folder not set")?;
-        let loot_path = path.join("Loot").join("data").join("loot.zls");
-        let data = std::fs::read(&loot_path).map_err(|e| e.to_string())?;
-        self.vanilla_data = Some(data.clone());
-        let catalog = LootCatalog::load_from_bytes(&data).map_err(|e| e.to_string())?;
-        self.vanilla_catalog = Some(catalog.clone());
-        self.working_catalog = Some(catalog);
-        self.preset_manager.set_vanilla_data(data);
-        Ok(())
-    }
-
-    fn set_game_path(&mut self, path: PathBuf) {
-        self.game_path = Some(path.clone());
+    /// Update the stored game path, persist it, and reload everything.
+    pub fn set_game_path(&mut self, path: PathBuf) {
         self.config.game_path = Some(path.clone());
         self.config.save();
-        self.preset_manager.set_game_path(&path);
-        self.error_message = None;
-        if let Err(e) = self.load_vanilla_catalog() {
-            self.error_message = Some(e);
-        }
-        if let Err(e) = self.load_vanilla_monster_catalog() {
-            self.error_message = Some(e);
-        }
-        if let Some(ref cat) = self.working_monster_catalog {
-            let names: Vec<String> = cat.monsters.iter()
-                .filter(|m| !m.texture.is_empty())
-                .map(|m| m.texture.clone())
-                .collect();
-            self.monster_texture_cache.start_preload(&path, names);
+
+        self.load_catalogs(&path);
+
+        // Drop the old atlas and texture so they get re-loaded lazily on the next frame that needs them.
+        self.item_atlas = None;
+    }
+
+    pub fn choose_game_folder(&mut self) {
+        if let Some(folder) = FileDialog::new().pick_folder() {
+            self.set_game_path(folder);
         }
     }
 
@@ -360,7 +369,7 @@ impl ResalinatedApp {
                         self.edit_folder_name = p.folder_name.clone();
                     }
                     self.error_message = None;
-                    self.active_tab = Tab::Items;
+                    self.active_tab = Tab::PresetInfo;
                 }
                 Err(e) => self.error_message = Some(format!("Failed to parse preset: {}", e)),
             }
@@ -399,7 +408,7 @@ impl ResalinatedApp {
             self.edit_meta = p.meta.clone();
             self.edit_folder_name = p.folder_name.clone();
         }
-        self.active_tab = Tab::Items;
+        self.active_tab = Tab::PresetInfo;
     }
 
     pub fn show_settings_window(&mut self, ctx: &egui::Context) {
@@ -428,11 +437,11 @@ impl ResalinatedApp {
                             )
                             .changed()
                         {
-                            self.config.save();
+                            self.config_save_timer = 0.1;
                         }
                         if ui.button("Reset").clicked() {
                             self.config.item_icon_size = default_item_icon_size();
-                            self.config.save();
+                            self.config_save_timer = 0.1;
                         }
                     });
 
@@ -447,11 +456,11 @@ impl ResalinatedApp {
                             )
                             .changed()
                         {
-                            self.config.save();
+                            self.config_save_timer = 0.1;
                         }
                         if ui.button("Reset").clicked() {
                             self.config.item_font_size = default_item_font_size();
-                            self.config.save();
+                            self.config_save_timer = 0.1;
                         }
                     });
 
@@ -468,11 +477,11 @@ impl ResalinatedApp {
                             )
                             .changed()
                         {
-                            self.config.save();
+                        self.config_save_timer = 0.1;
                         }
                         if ui.button("Reset").clicked() {
                             self.config.drag_value_sensitivity = default_drag_sensitivity();
-                            self.config.save();
+                        self.config_save_timer = 0.1;
                         }
                     });
 
@@ -487,7 +496,7 @@ impl ResalinatedApp {
                             )
                             .changed()
                         {
-                            self.config.save();
+                        self.config_save_timer = 0.1;
                         }
                     });
                 });
@@ -498,19 +507,10 @@ impl ResalinatedApp {
 }
 
 impl eframe::App for ResalinatedApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        //if self.active_tab == Tab::Monsters {
-        self.monster_texture_cache.update(ctx);
-        if self.monster_texture_cache.is_loading() {
-            ctx.request_repaint();
-        }
-        //}
-    }
-
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         if self.item_atlas.is_none() {
-            if let Some(ref gp) = self.game_path {
-                match ItemAtlas::load(gp, ui.ctx()) {
+            if let Some(game_path) = self.config.game_path.clone() {
+                match ItemAtlas::load(&game_path, ui.ctx()) {
                     Ok(atlas) => self.item_atlas = Some(atlas),
                     Err(e) => eprintln!("Failed to load item atlas: {}", e),
                 }
@@ -522,20 +522,14 @@ impl eframe::App for ResalinatedApp {
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button("File", |ui| {
                     if ui.button("Set Game Folder").clicked() {
-                        if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                            self.set_game_path(path);
-                        }
+                        self.choose_game_folder();
                         ui.close();
                     }
-                    if ui.button("Load Vanilla Catalog").clicked() {
-                        if let Err(e) = self.load_vanilla_catalog() {
-                            self.error_message = Some(e);
-                        } else if let Err(e) = self.load_vanilla_monster_catalog() {
-                            self.error_message = Some(e);
-                        } else {
-                            self.error_message = None;
+                    if ui.button("Open Presets Folder").clicked() {
+                        let presets_dir = self.preset_manager.presets_dir();  // expose via a public getter
+                        if let Err(e) = open::that(&presets_dir) {
+                            self.error_message = Some(format!("Failed to open presets folder: {}", e));
                         }
-                        ui.close();
                     }
                 });
                 ui.menu_button("Settings", |ui| {
@@ -546,26 +540,33 @@ impl eframe::App for ResalinatedApp {
                 });
             });
 
-            // Status
-            if let Some(gp) = &self.game_path {
-                ui.label(format!("Game folder: {}", gp.display()));
-            } else {
-                ui.colored_label(egui::Color32::YELLOW, "Game folder not set.");
-            }
-            if let Some(err) = &self.error_message {
-                ui.colored_label(egui::Color32::RED, err);
-            }
-
             self.show_settings_window(ui.ctx());
+
+            // Game folder status line
+            if let Some(game_path) = &self.config.game_path {
+                ui.label(format!("Game folder: {}", game_path.display()));
+            } else {
+                ui.colored_label(egui::Color32::YELLOW, "Game folder not set (needed for item names/icons, and bestiary textures/names)", );
+                if ui.button("Set Game Folder").clicked() {
+                    self.choose_game_folder();
+                }
+            }
+            if let Some(err) = &self.catalog_error {
+                ui.colored_label(egui::Color32::RED, format!("Loot catalog error: {}", err));
+            }
+            if let Some(err) = &self.monster_catalog_error {
+                ui.colored_label(egui::Color32::RED, format!("Monster catalog error: {}", err));
+            }
+            if let Some(err) = &self.error_message { ui.colored_label(egui::Color32::RED, err); }
 
             ui.separator();
 
             // Tab bar
             ui.horizontal(|ui| {
+                ui.selectable_value(&mut self.active_tab, Tab::Manager, "Manager");
                 ui.selectable_value(&mut self.active_tab, Tab::PresetInfo, "Preset Info");
                 ui.selectable_value(&mut self.active_tab, Tab::Items, "Items");
                 ui.selectable_value(&mut self.active_tab, Tab::Monsters, "Monsters");
-                ui.selectable_value(&mut self.active_tab, Tab::Manager, "Manager");
 
                 ui.vertical(|ui| {
                     // progress bar while textures are loading
@@ -581,11 +582,31 @@ impl eframe::App for ResalinatedApp {
 
             // Content
             match self.active_tab {
+                Tab::Manager => manager::show(self, ui),
                 Tab::PresetInfo => preset_info::show(self, ui),
                 Tab::Items => items::show(self, ui),
                 Tab::Monsters => monsters::show(self, ui),
-                Tab::Manager => manager::show(self, ui),
             }
         });
+    }
+
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        //if self.active_tab == Tab::Monsters {
+        self.monster_texture_cache.update(ctx);
+        if self.monster_texture_cache.is_loading() {
+            ctx.request_repaint();
+        }
+
+        if self.config_save_timer > 0.0 {
+            self.config_save_timer -= ctx.input(|i| i.stable_dt);
+
+            if self.config_save_timer <= 0.01 {
+                self.config.save();
+                eprintln!("Config saved.");
+                self.config_save_timer = 0.0;
+            }
+        }
+
+        //}
     }
 }

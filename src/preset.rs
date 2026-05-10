@@ -205,12 +205,13 @@ impl PresetManager {
     }
 
     /// Remove a preset from the enabled list.
-    pub fn disable_preset(&mut self, folder_name: &str) {
+    pub fn disable_preset(&mut self, folder_name: &str) -> Result<(), String> {
         if folder_name == "Vanilla (Base)" {
-            return;
+            return Err("Cannot disable the Vanilla preset".to_string());
         }
         self.enabled_presets.retain(|x| x != folder_name);
         self.save_enabled_presets();
+        Ok(())
     }
 
     /// Reorder enabled presets: move the preset at `from_index` to `to_index`.
@@ -328,7 +329,9 @@ impl PresetManager {
 
     /// Write any file into a preset folder.
     pub fn save_preset_file(&self, folder_name: &str, filename: &str, data: &[u8]) -> Result<(), String> {
-        let path = self.presets_dir.join(folder_name).join(filename);
+        let dir = self.presets_dir.join(folder_name);
+        fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let path = dir.join(filename);
         fs::write(&path, data).map_err(|e| e.to_string())
     }
 
@@ -351,16 +354,25 @@ impl PresetManager {
         fs::read(&loot_path).ok()
     }
 
+    // Returns the presets directory
+    pub fn presets_dir(&self) -> &Path {
+        &self.presets_dir
+    }
+
     /// Save metadata for an installed preset.
     pub fn save_preset_meta(&self, folder_name: &str, meta: &PresetMeta) -> Result<(), String> {
-        let meta_path = self.presets_dir.join(folder_name).join("preset.json");
+        let dir = self.presets_dir.join(folder_name);
+        fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let meta_path = dir.join("preset.json");
         let json = serde_json::to_string_pretty(meta).map_err(|e| e.to_string())?;
         fs::write(&meta_path, json).map_err(|e| e.to_string())
     }
 
     /// Save loot data for an installed preset.
     pub fn save_preset_loot(&self, folder_name: &str, data: &[u8]) -> Result<(), String> {
-        let loot_path = self.presets_dir.join(folder_name).join("loot.zls");
+        let dir = self.presets_dir.join(folder_name);
+        fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let loot_path = dir.join("loot.zls");
         fs::write(&loot_path, data).map_err(|e| e.to_string())
     }
 

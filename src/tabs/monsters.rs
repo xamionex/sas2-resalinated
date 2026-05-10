@@ -3,6 +3,7 @@ use eframe::egui;
 use egui::{Color32, Ui};
 use sas2_parser::monster_catalog::{MonsterDef, MonsterFieldValue};
 use std::collections::HashMap;
+use sas2_parser::monster_names::get_monster_field_name;
 
 fn add_monster_label(ui: &mut Ui, title: &str, font_size: f32) {
     for word in title.split_whitespace() {
@@ -53,7 +54,7 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
     let actual_width = right_panel.response.rect.width();
     if (actual_width - app.config.monsters_details_panel_width).abs() > 0.1 {
         app.config.monsters_details_panel_width = actual_width;
-        app.config.save();
+        app.config_save_timer = 0.25;
     }
 
     // Central panel: search + list with icons
@@ -92,7 +93,7 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
         // Group by type‑subtype
         let mut grouped: HashMap<String, Vec<(usize, &MonsterDef)>> = HashMap::new();
         for (idx, def) in filtered {
-            let cat = format!("Type {} - SubType {}", def.type_, def.sub_type);
+            let cat = format!("{} - SubType {}", sas2_parser::monster_names::get_monster_type_name(def.type_), def.sub_type);
             grouped.entry(cat).or_default().push((idx, def));
         }
         let mut categories: Vec<_> = grouped.keys().cloned().collect();
@@ -112,16 +113,16 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
                                 let tex = if def.texture.is_empty() {
                                     None
                                 } else {
-                                    app.monster_texture_cache.get_or_load(&def.texture)
+                                    app.monster_texture_cache.get_or_assemble(
+                                        ui.ctx(),
+                                        &def.def,
+                                        &def.texture,
+                                    )
                                 };
                                 let response = if let Some(tex) = &tex {
-                                    // Calculate UV for the first 128x128 frame
-                                    let size = tex.size_vec2();          // TextureHandle knows its pixel size
-                                    let uv = crate::atlas::monster_idle_uv(size[0] as u32, size[1] as u32);
                                     ui.add(egui::Button::image(
-                                        egui::Image::from_texture(tex)
-                                            .fit_to_exact_size(egui::vec2(app.config.item_icon_size, app.config.item_icon_size))
-                                            .uv(uv),
+                                        egui::Image::from_texture(&tex.clone())
+                                            .fit_to_exact_size(egui::vec2(app.config.item_icon_size, app.config.item_icon_size)),
                                     ))
                                 } else {
                                     // placeholder while loading
@@ -285,7 +286,7 @@ fn show_monsterdef_editor(ui: &mut Ui, def: &mut MonsterDef, vanilla: Option<&Mo
     ui.collapsing(format!("Fields ({})", def.fields.len()), |ui| {
         egui::ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
             for field in def.fields.iter_mut() {
-                let fname = format!("Field {}", field.id);
+                let fname = format!("{}: {}", field.id, get_monster_field_name(def.type_, field.id));
                 let changed = vanilla.and_then(|vdef| vdef.fields.iter().find(|vf| vf.id == field.id))
                     .map(|vf| match (&field.value, &vf.value) {
                         (MonsterFieldValue::Float(a), MonsterFieldValue::Float(b)) => (a - b).abs() > 0.001,

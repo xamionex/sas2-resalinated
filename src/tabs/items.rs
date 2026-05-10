@@ -90,7 +90,7 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
     let actual_width = right_panel.response.rect.width();
     if (actual_width - app.config.items_details_panel_width).abs() > 0.1 {
         app.config.items_details_panel_width = actual_width;
-        app.config.save();
+        app.config_save_timer = 0.25;
     }
 
     // Central panel: search + list (full copy from save editor)

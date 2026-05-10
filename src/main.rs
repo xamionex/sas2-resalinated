@@ -3,6 +3,7 @@ mod config;
 mod preset;
 pub mod tabs;
 pub mod atlas;
+mod catalog;
 
 use crate::app::ResalinatedApp;
 #[cfg(not(debug_assertions))]

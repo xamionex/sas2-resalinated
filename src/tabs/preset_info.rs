@@ -30,10 +30,13 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
 
     ui.separator();
 
-    // Overwrite confirmation block
-    if let Some(_existing_folder) = app.confirm_overwrite_folder.take() {
-        let overwrite_name = _existing_folder.clone();
-        ui.colored_label(egui::Color32::RED, format!("Preset '{}' already exists. Overwrite?", overwrite_name));
+    // Overwrite confirmation – only clear when user explicitly answers
+    if let Some(ref existing_folder) = app.confirm_overwrite_folder.clone() {
+        let overwrite_name = existing_folder.clone();
+        ui.colored_label(
+            egui::Color32::RED,
+            format!("Preset '{}' already exists. Overwrite?", overwrite_name),
+        );
         ui.horizontal(|ui| {
             if ui.button("Yes, overwrite").clicked() {
                 let folder = overwrite_name.clone();
@@ -43,24 +46,31 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
                     Ok(()) => {
                         app.error_message = None;
                         app.active_tab = crate::tabs::Tab::Manager;
+                        app.confirm_overwrite_folder = None;
                     }
-                    Err(e) => app.error_message = Some(e),
+                    Err(e) => {
+                        app.error_message = Some(e);
+                        app.confirm_overwrite_folder = None;
+                    }
                 }
             }
             if ui.button("No").clicked() {
-                // just discard, folder already taken out
+                app.confirm_overwrite_folder = None;
             }
         });
     } else {
-        ui.separator();
         if ui.button("Save Modified as Preset").clicked() {
             if app.edit_folder_name.is_empty() {
                 app.error_message = Some("Folder name cannot be empty".to_string());
             } else {
                 let folder_name = app.edit_folder_name.clone();
                 let meta = app.edit_meta.clone();
-                if app.preset_manager.installed_presets().iter().any(|p| p.folder_name == folder_name) {
-                    // Ask for overwrite
+                if app
+                    .preset_manager
+                    .installed_presets()
+                    .iter()
+                    .any(|p| p.folder_name == folder_name)
+                {
                     app.confirm_overwrite_folder = Some(folder_name);
                 } else {
                     match app.save_preset(&folder_name, meta) {

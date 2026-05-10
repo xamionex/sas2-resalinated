@@ -99,7 +99,7 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
     let actual_left = left_panel.response.rect.width();
     if (actual_left - app.config.manager_left_panel_width).abs() > 0.1 {
         app.config.manager_left_panel_width = actual_left;
-        app.config.save();
+        app.config_save_timer = 0.25;
     }
 
     // Right panel: enabled presets
@@ -138,7 +138,11 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
                 if ui.button("< Disable").clicked() {
                     if let Some(idx) = app.manager_selected_enabled {
                         let name = enabled[idx].clone();
-                        app.preset_manager.disable_preset(&name);
+                        if let Err(e) = app.preset_manager.disable_preset(&name) {
+                            app.error_message = Some(e);
+                        } else {
+                            app.error_message = None;
+                        }
                         app.manager_selected_enabled = None;
                     }
                 }

@@ -1,10 +1,14 @@
 use egui::{pos2, Rect, TextureHandle};
 use sas2_parser::loot_catalog::LootDef;
+use sas2_parser::subflags::SubFlagDefCatalog;
 use sas2_parser::xnb_loader::load_texture_from_path;
+use sas2_parser::xtexture::XTextureMeta;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
+use image::RgbaImage;
+use sas2_parser::char_def::CharDef;
 
 /// The item icon atlas loaded from items.xnb.
 /// Icons are arranged in a 32-wide grid of 128×128 tiles.
@@ -54,17 +58,17 @@ impl ItemAtlas {
     }
 }
 
-/// Maximum number of GPU texture uploads per frame.
-const MAX_UPLOADS_PER_FRAME: usize = 1;
+const MAX_UPLOADS_PER_FRAME: usize = 4;
 
 pub struct MonsterTextureCache {
-    /// Fully loaded GPU textures (created on UI thread).
     textures: HashMap<String, TextureHandle>,
-    /// Indicates whether the background thread has finished loading.
     loading_complete: bool,
     pending_receiver: Option<mpsc::Receiver<(String, Vec<u8>, u32, u32)>>,
     total_textures: usize,
     loaded_textures: usize,
+    assembled_cache: HashMap<(String, String), TextureHandle>,
+    game_path: Option<PathBuf>,
+    xtexture_meta: Option<HashMap<String, XTextureMeta>>,
 }
 
 impl MonsterTextureCache {
@@ -75,6 +79,28 @@ impl MonsterTextureCache {
             pending_receiver: None,
             total_textures: 0,
             loaded_textures: 0,
+            assembled_cache: HashMap::new(),
+            game_path: None,
+            xtexture_meta: None,
+        }
+    }
+
+    pub(crate) fn set_game_path(&mut self, game_path: &Path) {
+        self.game_path = Some(game_path.to_path_buf());
+
+        // Load sprite-cell metadata so assemble_monster_sprite can use the real
+        // srcRect / origin for each tile rather than assuming a 128×128 grid.
+        let flagdefs_path = game_path.join("Content").join("gfx").join("flagdefs.zfd");
+        let master_path   = game_path.join("Content").join("gfx").join("master.zcm");
+
+        match SubFlagDefCatalog::load_from_path(&flagdefs_path) {
+            Err(e) => eprintln!("[atlas] Failed to load flagdefs.zfd: {}", e),
+            Ok(flag_defs) => {
+                match XTextureMeta::load_all_from_master_path(&master_path, &flag_defs) {
+                    Err(e) => eprintln!("[atlas] Failed to load master.zcm: {}", e),
+                    Ok(meta_map) => self.xtexture_meta = Some(meta_map),
+                }
+            }
         }
     }
 
@@ -119,26 +145,19 @@ impl MonsterTextureCache {
         // Store the receiver so we can poll it each frame.
     }
 
-    /// Call every frame on the UI thread to process any completed loads.
-    /// A maximum of MAX_UPLOADS_PER_FRAME textures are uploaded to the GPU.
-    pub fn update(&mut self, _ctx: &egui::Context) {
+    pub fn update(&mut self, ctx: &egui::Context) {
         let mut processed = 0;
         if let Some(rx) = &self.pending_receiver {
             loop {
-                if processed >= MAX_UPLOADS_PER_FRAME {
-                    break;
-                }
+                if processed >= MAX_UPLOADS_PER_FRAME { break; }
                 match rx.try_recv() {
                     Ok((name, data, w, h)) => {
                         processed += 1;
-                        let color_image = egui::ColorImage::from_rgba_unmultiplied(
-                            [w as usize, h as usize],
-                            &data,
+                        let ci = egui::ColorImage::from_rgba_unmultiplied(
+                            [w as usize, h as usize], &data,
                         );
-                        let tex = _ctx.load_texture(
-                            format!("monster_tex_{}", name),
-                            color_image,
-                            Default::default(),
+                        let tex = ctx.load_texture(
+                            format!("monster_tex_{}", name), ci, Default::default(),
                         );
                         self.textures.insert(name, tex);
                         self.loaded_textures += 1;
@@ -163,27 +182,320 @@ impl MonsterTextureCache {
         }
     }
 
-    /// Get a texture handle for the given monster, returns an owned handle.
-    /// Textures are already uploaded during `update`, so this is a simple lookup.
-    pub fn get_or_load(
-        &self,
+    pub fn get_or_assemble(
+        &mut self,
+        ctx: &egui::Context,
+        def_name: &str,
         texture_name: &str,
     ) -> Option<TextureHandle> {
-        self.textures.get(texture_name).cloned()
+        let game_path = self.game_path.as_ref()?.clone();
+        let key = (def_name.to_string(), texture_name.to_string());
+
+        if let Some(tex) = self.assembled_cache.get(&key) {
+            return Some(tex.clone());
+        }
+
+        let tex_meta = self.xtexture_meta
+            .as_ref()
+            .and_then(|m| m.get(texture_name));
+
+        match assemble_monster_sprite(&game_path, def_name, texture_name, tex_meta) {
+            Some(img) => {
+                let (w, h) = (img.width() as usize, img.height() as usize);
+                let pixels = img.into_vec();
+                let ci = egui::ColorImage::from_rgba_unmultiplied([w, h], &pixels);
+                let tex = ctx.load_texture(
+                    format!("assembled_{}_{}", def_name, texture_name),
+                    ci,
+                    Default::default(),
+                );
+                self.assembled_cache.insert(key, tex.clone());
+                Some(tex)
+            }
+            None => {
+                eprintln!(
+                    "Failed to assemble monster sprite for {}/{} – falling back to raw first tile",
+                    def_name, texture_name
+                );
+                let raw = self.textures.get(texture_name)?;
+                eprintln!("Returning raw texture (full sheet) as fallback");
+                Some(raw.clone())
+            }
+        }
     }
 }
 
-/// Returns the UV rectangle for the first 128×128 tile of a monster sprite sheet.
-/// Falls back to (0,0)-(1,1) if the texture is smaller than 128 in either dimension.
-pub fn monster_idle_uv(texture_width: u32, texture_height: u32) -> Rect {
-    let frame_w = 128.min(texture_width);
-    let frame_h = 128.min(texture_height);
-    let x = 0.0;
-    let y = 0.0;
-    let w = frame_w as f32 / texture_width.max(1) as f32;
-    let h = frame_h as f32 / texture_height.max(1) as f32;
-    Rect::from_min_max(
-        pos2(x, y),
-        pos2(x + w, y + h),
-    )
+// Sprites
+
+struct PartInfo {
+    src_x: i32,
+    src_y: i32,
+    src_w: i32,
+    src_h: i32,
+    anchor_x: f32,
+    anchor_y: f32,
+    cx: f32,
+    cy: f32,
+    rot: f32,
+    scale_x: f32,
+    scale_y: f32,
+    flip: i32,
+}
+
+pub fn assemble_monster_sprite(
+    game_path: &Path,
+    def_name: &str,
+    texture_name: &str,
+    tex_meta: Option<&XTextureMeta>,
+) -> Option<RgbaImage> {
+    // 1. Character definition
+    let zsx_path = game_path
+        .join("Character")
+        .join("data")
+        .join(format!("{}.zsx", def_name));
+
+    let char_def = match CharDef::load_from_path(&zsx_path) {
+        Ok(cd) => cd,
+        Err(e) => {
+            eprintln!("[assemble] Failed to load char def for {}: {}", def_name, e);
+            return None;
+        }
+    };
+
+    // 2. Idle frame
+    let frame = match char_def.idle_frame() {
+        Some(f) => f,
+        None => {
+            eprintln!("[assemble] No idle frame for {}", def_name);
+            return None;
+        }
+    };
+
+    const BODY_MAX: i32 = 384;
+
+    // 3. Sprite sheet
+    let tex_path = game_path
+        .join("Content")
+        .join("gfx")
+        .join(format!("{}.xnb", texture_name));
+
+    let sheet = match sas2_parser::xnb_loader::load_texture_from_path(
+        tex_path.to_str().unwrap_or(""),
+    ) {
+        Ok(img) => img,
+        Err(e) => {
+            eprintln!("[assemble] Failed to load texture {}: {}", texture_name, e);
+            return None;
+        }
+    };
+
+    let sheet_w = sheet.width() as i32;
+    let sheet_h = sheet.height() as i32;
+    let fallback_cols = (sheet_w / 128).max(1);
+
+    // 4. Compute Absolute Hierarchical Transforms
+    let mut transforms = vec![None; frame.parts.len()];
+
+    fn compute_transform(
+        idx: usize,
+        parts: &[sas2_parser::char_def::Part],
+        transforms: &mut Vec<Option<(f32, f32, f32)>>,
+    ) -> (f32, f32, f32) {
+        if let Some(t) = transforms[idx] {
+            return t;
+        }
+        let part = &parts[idx];
+        if part.parent > -1 && (part.parent as usize) < parts.len() {
+            let parent_idx = part.parent as usize;
+            let (px, py, prot) = compute_transform(parent_idx, parts, transforms);
+
+            let ox = part.parent_loc_offset.0;
+            let oy = part.parent_loc_offset.1;
+
+            let x = px + prot.cos() * ox + (prot + std::f32::consts::FRAC_PI_2).cos() * oy;
+            let y = py + prot.sin() * ox + (prot + std::f32::consts::FRAC_PI_2).sin() * oy;
+            let rot = prot + part.parent_rotation_offset;
+
+            let t = (x, y, rot);
+            transforms[idx] = Some(t);
+            t
+        } else {
+            let t = (part.location.0, part.location.1, part.rotation);
+            transforms[idx] = Some(t);
+            t
+        }
+    }
+
+    for i in 0..frame.parts.len() {
+        compute_transform(i, &frame.parts, &mut transforms);
+    }
+
+    // 5. Resolve per-part geometry
+    let mut parts: Vec<PartInfo> = Vec::new();
+
+    for (i, part) in frame.parts.iter().enumerate() {
+        if part.idx < 0 || part.idx >= BODY_MAX { continue; }
+        let idx = part.idx as usize;
+
+        let (src_x, src_y, src_w, src_h, anchor_x, anchor_y) = match tex_meta {
+            Some(meta) => {
+                match meta.cells.get(idx).and_then(|c| c.as_ref()) {
+                    Some(cell) => {
+                        let (sx, sy, sw, sh) = cell.src_rect;
+                        let (ox, oy) = cell.origin;
+                        (sx, sy, sw, sh, ox - sx as f32, oy - sy as f32)
+                    }
+                    None => continue,
+                }
+            }
+            None => {
+                let sx = (part.idx % fallback_cols) * 128;
+                let sy = (part.idx / fallback_cols) * 128;
+                (sx, sy, 128i32, 128i32, 64.0_f32, 64.0_f32)
+            }
+        };
+
+        if src_x >= sheet_w || src_y >= sheet_h || src_w <= 0 || src_h <= 0 { continue; }
+
+        let (cx, cy, rot) = transforms[i].unwrap();
+
+        // Game natively authors facing right (face = 1). We do not negate cy here,
+        // as XNA transforms are intrinsically Y-Down in the engine.
+        parts.push(PartInfo {
+            src_x, src_y, src_w, src_h,
+            anchor_x, anchor_y,
+            cx, cy, rot,
+            scale_x: part.scaling.0,
+            scale_y: part.scaling.1,
+            flip: part.flip,
+        });
+    }
+
+    if parts.is_empty() {
+        eprintln!("[assemble] No drawable parts for {}/{}", def_name, texture_name);
+        return None;
+    }
+
+    // 6. Bounding box (considering rotation, scale, and exact anchor)
+    let mut min_x = f32::MAX;
+    let mut min_y = f32::MAX;
+    let mut max_x = f32::MIN;
+    let mut max_y = f32::MIN;
+
+    for p in &parts {
+        let left   = -p.anchor_x * p.scale_x;
+        let right  = (p.src_w as f32 - p.anchor_x) * p.scale_x;
+        let top    = -p.anchor_y * p.scale_y;
+        let bottom = (p.src_h as f32 - p.anchor_y) * p.scale_y;
+
+        let corners = [
+            (left, top), (right, top), (right, bottom), (left, bottom),
+        ];
+
+        for (dx, dy) in corners {
+            let rx = dx * p.rot.cos() - dy * p.rot.sin();
+            let ry = dx * p.rot.sin() + dy * p.rot.cos();
+            min_x = min_x.min(p.cx + rx);
+            min_y = min_y.min(p.cy + ry);
+            max_x = max_x.max(p.cx + rx);
+            max_y = max_y.max(p.cy + ry);
+        }
+    }
+
+    let canvas_w = (max_x - min_x).ceil() as u32;
+    let canvas_h = (max_y - min_y).ceil() as u32;
+    if canvas_w == 0 || canvas_h == 0 {
+        eprintln!("[assemble] Zero-size canvas for {}", def_name);
+        return None;
+    }
+
+    // 7. Composite (Inverse Matrix Painter's Algorithm)
+    let mut canvas = RgbaImage::new(canvas_w, canvas_h);
+
+    for p in &parts {
+        if p.scale_x.abs() < 0.001 || p.scale_y.abs() < 0.001 { continue; }
+
+        let left   = -p.anchor_x * p.scale_x;
+        let right  = (p.src_w as f32 - p.anchor_x) * p.scale_x;
+        let top    = -p.anchor_y * p.scale_y;
+        let bottom = (p.src_h as f32 - p.anchor_y) * p.scale_y;
+
+        let corners = [
+            (left, top), (right, top), (right, bottom), (left, bottom),
+        ];
+
+        let mut pmin_x = f32::MAX;
+        let mut pmin_y = f32::MAX;
+        let mut pmax_x = f32::MIN;
+        let mut pmax_y = f32::MIN;
+
+        for (dx, dy) in corners {
+            let rx = dx * p.rot.cos() - dy * p.rot.sin();
+            let ry = dx * p.rot.sin() + dy * p.rot.cos();
+            pmin_x = pmin_x.min(p.cx + rx);
+            pmin_y = pmin_y.min(p.cy + ry);
+            pmax_x = pmax_x.max(p.cx + rx);
+            pmax_y = pmax_y.max(p.cy + ry);
+        }
+
+        let start_x = (pmin_x - min_x).floor().max(0.0) as u32;
+        let start_y = (pmin_y - min_y).floor().max(0.0) as u32;
+        let end_x = (pmax_x - min_x).ceil().min(canvas_w as f32) as u32;
+        let end_y = (pmax_y - min_y).ceil().min(canvas_h as f32) as u32;
+
+        let inv_rot = -p.rot;
+
+        for dy in start_y..end_y {
+            for dx in start_x..end_x {
+                let px = dx as f32 + min_x + 0.5;
+                let py = dy as f32 + min_y + 0.5;
+
+                let vx = px - p.cx;
+                let vy = py - p.cy;
+
+                // Un-rotate
+                let rx = vx * inv_rot.cos() - vy * inv_rot.sin();
+                let ry = vx * inv_rot.sin() + vy * inv_rot.cos();
+
+                // Un-scale
+                let mut sx = rx / p.scale_x;
+                let sy = ry / p.scale_y;
+
+                // Un-flip
+                if p.flip != 0 {
+                    sx = -sx;
+                }
+
+                if sx >= -p.anchor_x && sx < (p.src_w as f32 - p.anchor_x) &&
+                    sy >= -p.anchor_y && sy < (p.src_h as f32 - p.anchor_y) {
+
+                    let tx = (sx + p.anchor_x).floor() as i32;
+                    let ty = (sy + p.anchor_y).floor() as i32;
+
+                    let src_px = (p.src_x + tx) as u32;
+                    let src_py = (p.src_y + ty) as u32;
+
+                    if src_px < sheet.width() && src_py < sheet.height() {
+                        let pixel = sheet.get_pixel(src_px, src_py);
+                        if pixel[3] > 0 {
+                            let alpha = pixel[3] as f32 / 255.0;
+                            let mut bg = *canvas.get_pixel(dx, dy);
+
+                            let bg_a = bg[3] as f32 / 255.0;
+                            let out_a = alpha + bg_a * (1.0 - alpha);
+                            if out_a > 0.0 {
+                                bg[0] = ((pixel[0] as f32 * alpha + bg[0] as f32 * bg_a * (1.0 - alpha)) / out_a) as u8;
+                                bg[1] = ((pixel[1] as f32 * alpha + bg[1] as f32 * bg_a * (1.0 - alpha)) / out_a) as u8;
+                                bg[2] = ((pixel[2] as f32 * alpha + bg[2] as f32 * bg_a * (1.0 - alpha)) / out_a) as u8;
+                                bg[3] = (out_a * 255.0) as u8;
+                            }
+                            canvas.put_pixel(dx, dy, bg);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Some(canvas)
 }
