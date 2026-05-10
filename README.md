@@ -1,7 +1,5 @@
-# sas2-save-editor
+# sas2-resalinated
 
-Save editor for Salt and Sacrifice
+Custom editor for Salt and Sacrifice
 
-Supports editing inventory, player stats, cosmetics, flags, bestiary
-
-This was made with assistance from AI
+Lets you edit Items and Monsters (TODO: Skills)
