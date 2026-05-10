@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PROJECT="sas2-save-editor"
+PROJECT="sas2-resalinated"
 OUT_DIR="out"
 
 WIN_TARGET="x86_64-pc-windows-gnu"
