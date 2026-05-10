@@ -184,7 +184,7 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
                     }
                 }
             });
-            // Add Delete button (only for non‑vanilla)
+            // Add Delete button (only for non-vanilla)
             let is_vanilla = if let Some(idx) = app.manager_selected_enabled {
                 &enabled[idx] == "Vanilla (Base)"
             } else { false };

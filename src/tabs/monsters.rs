@@ -2,8 +2,7 @@ use crate::app::ResalinatedApp;
 use eframe::egui;
 use egui::{Color32, Ui};
 use sas2_parser::monster_catalog::{MonsterDef, MonsterFieldValue};
-use std::collections::HashMap;
-use sas2_parser::monster_names::get_monster_field_name;
+use sas2_parser::monster_names;
 
 fn add_monster_label(ui: &mut Ui, title: &str, font_size: f32) {
     for word in title.split_whitespace() {
@@ -57,7 +56,7 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
         app.config_save_timer = 0.25;
     }
 
-    // Central panel: search + list with icons
+    // Central panel: search + list
     egui::CentralPanel::default().show_inside(ui, |ui| {
         ui.set_min_width(200.0);
 
@@ -90,10 +89,9 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
             })
             .collect();
 
-        // Group by type‑subtype
-        let mut grouped: HashMap<String, Vec<(usize, &MonsterDef)>> = HashMap::new();
+        let mut grouped: std::collections::HashMap<String, Vec<(usize, &MonsterDef)>> = std::collections::HashMap::new();
         for (idx, def) in filtered {
-            let cat = format!("{} - SubType {}", sas2_parser::monster_names::get_monster_type_name(def.type_), def.sub_type);
+            let cat = format!("{} - SubType {}", monster_names::get_monster_type_name(def.type_), def.sub_type);
             grouped.entry(cat).or_default().push((idx, def));
         }
         let mut categories: Vec<_> = grouped.keys().cloned().collect();
@@ -150,180 +148,187 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
 
 const CHANGED_COLOR: Color32 = Color32::from_rgb(200, 160, 0);
 
+fn field_row(ui: &mut Ui, label: &str, changed: bool, content: impl FnOnce(&mut Ui)) {
+    ui.horizontal(|ui| {
+        if changed {
+            ui.colored_label(CHANGED_COLOR, label);
+        } else {
+            ui.label(label);
+        }
+        content(ui);
+    });
+}
+
+fn monster_values_differ(a: &MonsterFieldValue, b: &MonsterFieldValue) -> bool {
+    match (a, b) {
+        (MonsterFieldValue::Float(x), MonsterFieldValue::Float(y)) => (x - y).abs() > 0.001,
+        (MonsterFieldValue::Int(x),   MonsterFieldValue::Int(y))   => x != y,
+        (MonsterFieldValue::String(x),MonsterFieldValue::String(y))=> x != y,
+        _ => true,
+    }
+}
+
 fn show_monsterdef_editor(ui: &mut Ui, def: &mut MonsterDef, vanilla: Option<&MonsterDef>) {
-    ui.heading("Monster Definition");
-    if let Some(vanilla_def) = vanilla {
-        if ui.button("Reset Monster to Vanilla").clicked() { *def = vanilla_def.clone(); return; }
-    }
-    ui.separator();
+    egui::ScrollArea::vertical()
+        .auto_shrink([false; 2])
+        .show(ui, |ui| {
+            ui.heading("Monster Definition");
+            if let Some(vanilla_def) = vanilla {
+                if ui.button("Reset Monster to Vanilla").clicked() { *def = vanilla_def.clone(); return; }
+            }
+            ui.separator();
 
-    // Helper to draw a label that changes color when the value differs
-    let colored = |ui: &mut Ui, label: &str, changed: bool| {
-        if changed { ui.colored_label(CHANGED_COLOR, label); } else { ui.label(label); }
-    };
+            // Name
+            field_row(ui, "Name:", vanilla.map(|v| def.name != v.name).unwrap_or(true), |ui| {
+                ui.text_edit_singleline(&mut def.name);
+                if let Some(v) = vanilla { if def.name != v.name && ui.button("↺").clicked() { def.name = v.name.clone(); } }
+            });
 
-    // Name
-    let name_changed = vanilla.map(|v| def.name != v.name).unwrap_or(true);
-    ui.horizontal(|ui| {
-        colored(ui, "Name:", name_changed);
-        ui.text_edit_singleline(&mut def.name);
-        if let Some(v) = vanilla { if def.name != v.name { if ui.button("↺").clicked() { def.name = v.name.clone(); } } }
-    });
+            // Title
+            field_row(ui, "Title:", vanilla.map(|v| def.titles[0] != v.titles[0]).unwrap_or(true), |ui| {
+                ui.text_edit_singleline(&mut def.titles[0]);
+                if let Some(v) = vanilla { if def.titles[0] != v.titles[0] && ui.button("↺").clicked() { def.titles[0] = v.titles[0].clone(); } }
+            });
 
-    // Title (first entry)
-    let title_changed = vanilla.map(|v| def.titles[0] != v.titles[0]).unwrap_or(true);
-    ui.horizontal(|ui| {
-        colored(ui, "Title:", title_changed);
-        ui.text_edit_singleline(&mut def.titles[0]);
-        if let Some(v) = vanilla { if def.titles[0] != v.titles[0] { if ui.button("↺").clicked() { def.titles[0] = v.titles[0].clone(); } } }
-    });
+            // Description
+            field_row(ui, "Description:", vanilla.map(|v| def.descriptions[0] != v.descriptions[0]).unwrap_or(true), |ui| {
+                ui.text_edit_singleline(&mut def.descriptions[0]);
+                if let Some(v) = vanilla { if def.descriptions[0] != v.descriptions[0] && ui.button("↺").clicked() { def.descriptions[0] = v.descriptions[0].clone(); } }
+            });
 
-    // Description (first entry)
-    let desc_changed = vanilla.map(|v| def.descriptions[0] != v.descriptions[0]).unwrap_or(true);
-    ui.horizontal(|ui| {
-        colored(ui, "Description:", desc_changed);
-        ui.text_edit_singleline(&mut def.descriptions[0]);
-        if let Some(v) = vanilla { if def.descriptions[0] != v.descriptions[0] { if ui.button("↺").clicked() { def.descriptions[0] = v.descriptions[0].clone(); } } }
-    });
+            // Type / SubType
+            ui.horizontal(|ui| {
+                let tc = vanilla.map(|v| def.type_ != v.type_).unwrap_or(false);
+                let sc = vanilla.map(|v| def.sub_type != v.sub_type).unwrap_or(false);
+                if tc { ui.colored_label(CHANGED_COLOR, "Type:"); } else { ui.label("Type:"); }
+                ui.add(egui::DragValue::new(&mut def.type_));
+                if let Some(v) = vanilla { if def.type_ != v.type_ && ui.button("↺").clicked() { def.type_ = v.type_; } }
+                if sc { ui.colored_label(CHANGED_COLOR, "SubType:"); } else { ui.label("SubType:"); }
+                ui.add(egui::DragValue::new(&mut def.sub_type));
+                if let Some(v) = vanilla { if def.sub_type != v.sub_type && ui.button("↺").clicked() { def.sub_type = v.sub_type; } }
+                ui.label(format!("({})", monster_names::get_monster_type_name(def.type_)));
+            });
 
-    // Type & SubType
-    let type_changed = vanilla.map(|v| def.type_ != v.type_).unwrap_or(false);
-    let subtype_changed = vanilla.map(|v| def.sub_type != v.sub_type).unwrap_or(false);
-    ui.horizontal(|ui| {
-        colored(ui, "Type:", type_changed);
-        ui.add(egui::DragValue::new(&mut def.type_));
-        if let Some(v) = vanilla { if def.type_ != v.type_ { if ui.button("↺").clicked() { def.type_ = v.type_; } } }
-        ui.label("SubType:");
-        if subtype_changed { ui.colored_label(CHANGED_COLOR, ""); }
-        ui.add(egui::DragValue::new(&mut def.sub_type));
-        if let Some(v) = vanilla { if def.sub_type != v.sub_type { if ui.button("↺").clicked() { def.sub_type = v.sub_type; } } }
-    });
+            // Cost / Img / AltImg
+            field_row(ui, "Cost:", vanilla.map(|v| (def.cost - v.cost).abs() > 0.001).unwrap_or(true), |ui| {
+                let mut cost = def.cost;
+                if ui.add(egui::DragValue::new(&mut cost).speed(1.0)).changed() { def.cost = cost; }
+                if let Some(v) = vanilla { if (cost - v.cost).abs() > 0.001 && ui.button("↺").clicked() { def.cost = v.cost; } }
+            });
+            field_row(ui, "Img:", vanilla.map(|v| def.img != v.img).unwrap_or(true), |ui| {
+                ui.add(egui::DragValue::new(&mut def.img));
+                if let Some(v) = vanilla { if def.img != v.img && ui.button("↺").clicked() { def.img = v.img; } }
+            });
+            field_row(ui, "AltImg:", vanilla.map(|v| def.alt_img != v.alt_img).unwrap_or(true), |ui| {
+                ui.add(egui::DragValue::new(&mut def.alt_img));
+                if let Some(v) = vanilla { if def.alt_img != v.alt_img && ui.button("↺").clicked() { def.alt_img = v.alt_img; } }
+            });
+            field_row(ui, "Texture:", vanilla.map(|v| def.texture != v.texture).unwrap_or(true), |ui| {
+                ui.text_edit_singleline(&mut def.texture);
+                if let Some(v) = vanilla { if def.texture != v.texture && ui.button("↺").clicked() { def.texture = v.texture.clone(); } }
+            });
+            field_row(ui, "Def:", vanilla.map(|v| def.def != v.def).unwrap_or(true), |ui| {
+                ui.text_edit_singleline(&mut def.def);
+                if let Some(v) = vanilla { if def.def != v.def && ui.button("↺").clicked() { def.def = v.def.clone(); } }
+            });
 
-    // Cost
-    let cost_changed = vanilla.map(|v| (def.cost - v.cost).abs() > 0.001).unwrap_or(true);
-    ui.horizontal(|ui| {
-        colored(ui, "Cost:", cost_changed);
-        let mut cost = def.cost;
-        if ui.add(egui::DragValue::new(&mut cost).speed(1.0)).changed() { def.cost = cost; }
-        if let Some(v) = vanilla { if (cost - v.cost).abs() > 0.001 { if ui.button("↺").clicked() { def.cost = v.cost; } } }
-    });
-
-    // Img
-    let img_changed = vanilla.map(|v| def.img != v.img).unwrap_or(true);
-    ui.horizontal(|ui| {
-        colored(ui, "Img:", img_changed);
-        ui.add(egui::DragValue::new(&mut def.img));
-        if let Some(v) = vanilla { if def.img != v.img { if ui.button("↺").clicked() { def.img = v.img; } } }
-    });
-
-    // AltImg
-    let altimg_changed = vanilla.map(|v| def.alt_img != v.alt_img).unwrap_or(true);
-    ui.horizontal(|ui| {
-        colored(ui, "AltImg:", altimg_changed);
-        ui.add(egui::DragValue::new(&mut def.alt_img));
-        if let Some(v) = vanilla { if def.alt_img != v.alt_img { if ui.button("↺").clicked() { def.alt_img = v.alt_img; } } }
-    });
-
-    // Texture
-    let tex_changed = vanilla.map(|v| def.texture != v.texture).unwrap_or(true);
-    ui.horizontal(|ui| {
-        colored(ui, "Texture:", tex_changed);
-        ui.text_edit_singleline(&mut def.texture);
-        if let Some(v) = vanilla { if def.texture != v.texture { if ui.button("↺").clicked() { def.texture = v.texture.clone(); } } }
-    });
-
-    // Def
-    let def_changed = vanilla.map(|v| def.def != v.def).unwrap_or(true);
-    ui.horizontal(|ui| {
-        colored(ui, "Def:", def_changed);
-        ui.text_edit_singleline(&mut def.def);
-        if let Some(v) = vanilla { if def.def != v.def { if ui.button("↺").clicked() { def.def = v.def.clone(); } } }
-    });
-
-    // Box / shadow dimensions
-    {
-        let changed = vanilla.map(|v| def.box_width != v.box_width).unwrap_or(true);
-        ui.horizontal(|ui| {
-            colored(ui, "Box Width:", changed);
-            ui.add(egui::DragValue::new(&mut def.box_width));
-            if let Some(v) = vanilla { if def.box_width != v.box_width { if ui.button("↺").clicked() { def.box_width = v.box_width; } } }
-        });
-    }
-    {
-        let changed = vanilla.map(|v| def.box_height != v.box_height).unwrap_or(true);
-        ui.horizontal(|ui| {
-            colored(ui, "Box Height:", changed);
-            ui.add(egui::DragValue::new(&mut def.box_height));
-            if let Some(v) = vanilla { if def.box_height != v.box_height { if ui.button("↺").clicked() { def.box_height = v.box_height; } } }
-        });
-    }
-    {
-        let changed = vanilla.map(|v| def.box_sub_height != v.box_sub_height).unwrap_or(true);
-        ui.horizontal(|ui| {
-            colored(ui, "Box Sub Height:", changed);
-            ui.add(egui::DragValue::new(&mut def.box_sub_height));
-            if let Some(v) = vanilla { if def.box_sub_height != v.box_sub_height { if ui.button("↺").clicked() { def.box_sub_height = v.box_sub_height; } } }
-        });
-    }
-    {
-        let changed = vanilla.map(|v| def.shadow_width != v.shadow_width).unwrap_or(true);
-        ui.horizontal(|ui| {
-            colored(ui, "Shadow Width:", changed);
-            ui.add(egui::DragValue::new(&mut def.shadow_width));
-            if let Some(v) = vanilla { if def.shadow_width != v.shadow_width { if ui.button("↺").clicked() { def.shadow_width = v.shadow_width; } } }
-        });
-    }
-    {
-        let changed = vanilla.map(|v| def.shadow_height != v.shadow_height).unwrap_or(true);
-        ui.horizontal(|ui| {
-            colored(ui, "Shadow Height:", changed);
-            ui.add(egui::DragValue::new(&mut def.shadow_height));
-            if let Some(v) = vanilla { if def.shadow_height != v.shadow_height { if ui.button("↺").clicked() { def.shadow_height = v.shadow_height; } } }
-        });
-    }
-
-    // Fields, scrollable
-    ui.collapsing(format!("Fields ({})", def.fields.len()), |ui| {
-        egui::ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
-            for field in def.fields.iter_mut() {
-                let fname = format!("{}: {}", field.id, get_monster_field_name(def.type_, field.id));
-                let changed = vanilla.and_then(|vdef| vdef.fields.iter().find(|vf| vf.id == field.id))
-                    .map(|vf| match (&field.value, &vf.value) {
-                        (MonsterFieldValue::Float(a), MonsterFieldValue::Float(b)) => (a - b).abs() > 0.001,
-                        (MonsterFieldValue::Int(a),   MonsterFieldValue::Int(b))   => a != b,
-                        (MonsterFieldValue::String(a),MonsterFieldValue::String(b))=> a != b,
-                        _ => true,
-                    }).unwrap_or(true);
-                let label = if changed { egui::RichText::new(fname).color(CHANGED_COLOR) } else { egui::RichText::new(fname) };
+            // Box / shadow dimensions
+            for (label, val, van) in [
+                ("Box Width:",      &mut def.box_width,      vanilla.map(|v| v.box_width)),
+                ("Box Height:",     &mut def.box_height,     vanilla.map(|v| v.box_height)),
+                ("Box Sub Height:", &mut def.box_sub_height, vanilla.map(|v| v.box_sub_height)),
+                ("Shadow Width:",   &mut def.shadow_width,   vanilla.map(|v| v.shadow_width)),
+                ("Shadow Height:",  &mut def.shadow_height,  vanilla.map(|v| v.shadow_height)),
+            ] {
+                let changed = van.map(|vv| *val != vv).unwrap_or(true);
                 ui.horizontal(|ui| {
-                    ui.label(label);
-                    match &mut field.value {
-                        MonsterFieldValue::Float(v) => { ui.add(egui::DragValue::new(v).speed(0.1)); }
-                        MonsterFieldValue::Int(v)   => { ui.add(egui::DragValue::new(v)); }
-                        MonsterFieldValue::String(v)=> { ui.text_edit_singleline(v); }
+                    if changed { ui.colored_label(CHANGED_COLOR, label); } else { ui.label(label); }
+                    ui.add(egui::DragValue::new(val));
+                    if let Some(vv) = van { if *val != vv && ui.button("↺").clicked() { *val = vv; } }
+                });
+            }
+
+            ui.separator();
+
+            // Fields
+            ui.collapsing(format!("Fields ({})", def.fields.len()), |ui| {
+                egui::ScrollArea::vertical().max_height(280.0).show(ui, |ui| {
+                    for field in def.fields.iter_mut() {
+                        let fname = format!("{}: {}", field.id, monster_names::get_monster_field_name(def.type_, field.id));
+                        let changed = vanilla
+                            .and_then(|vdef| vdef.fields.iter().find(|vf| vf.id == field.id))
+                            .map(|vf| monster_values_differ(&field.value, &vf.value))
+                            .unwrap_or(true);
+
+                        let label = if changed {
+                            egui::RichText::new(&fname).color(CHANGED_COLOR)
+                        } else {
+                            egui::RichText::new(&fname)
+                        };
+
+                        ui.horizontal(|ui| {
+                            ui.label(label);
+                            match &mut field.value {
+                                MonsterFieldValue::Float(v)  => { ui.add(egui::DragValue::new(v).speed(0.1)); }
+                                MonsterFieldValue::Int(v)    => { ui.add(egui::DragValue::new(v)); }
+                                MonsterFieldValue::String(v) => { ui.text_edit_singleline(v); }
+                            }
+                            if let Some(vanilla_def) = vanilla {
+                                if let Some(vf) = vanilla_def.fields.iter().find(|vf| vf.id == field.id) {
+                                    if monster_values_differ(&field.value, &vf.value)
+                                        && ui.button("↺").clicked()
+                                    {
+                                        field.value = vf.value.clone();
+                                    }
+                                }
+                            }
+                        });
                     }
-                    if let Some(vanilla_def) = vanilla {
-                        if let Some(vf) = vanilla_def.fields.iter().find(|vf| vf.id == field.id) {
-                            let different = match (&field.value, &vf.value) {
-                                (MonsterFieldValue::Float(a), MonsterFieldValue::Float(b)) => (a - b).abs() > 0.001,
-                                (MonsterFieldValue::Int(a),   MonsterFieldValue::Int(b))   => a != b,
-                                (MonsterFieldValue::String(a),MonsterFieldValue::String(b))=> a != b,
-                                _ => true,
+                });
+            });
+
+            // Flags as checkboxes
+            let flag_count = monster_names::get_monster_flag_count(def.type_);
+            ui.collapsing(
+                format!("Flags ({} active / {} total)", def.flags.len(), flag_count),
+                |ui| {
+                    egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+                        for i in 0..flag_count {
+                            let is_set = def.flags.contains(&i);
+                            let vanilla_set = vanilla.map(|v| v.flags.contains(&i));
+                            let changed = vanilla_set.map(|vs| vs != is_set).unwrap_or(false);
+
+                            let label = format!("[{}] {}", i, monster_names::get_monster_flag_name(def.type_, i));
+                            let label_rich = if changed {
+                                egui::RichText::new(&label).color(CHANGED_COLOR)
+                            } else {
+                                egui::RichText::new(&label)
                             };
-                            if different {
-                                if ui.button("↺").clicked() {
-                                    field.value = vf.value.clone();
+
+                            let mut checked = is_set;
+                            if ui.checkbox(&mut checked, label_rich).changed() {
+                                if checked {
+                                    if !def.flags.contains(&i) {
+                                        def.flags.push(i);
+                                        def.flags.sort_unstable();
+                                    }
+                                } else {
+                                    def.flags.retain(|&f| f != i);
                                 }
                             }
                         }
-                    }
-                });
-            }
-        });
-    });
 
-    // Flags
-    ui.collapsing(format!("Flags ({})", def.flags.len()), |ui| {
-        for flag in &def.flags { ui.label(format!("Flag {}", flag)); }
-    });
+                        // Show any flags beyond the known range
+                        let extra: Vec<i32> = def.flags.iter().copied().filter(|&f| f >= flag_count).collect();
+                        if !extra.is_empty() {
+                            ui.separator();
+                            ui.label(egui::RichText::new("Unknown flags (raw):").italics());
+                            for f in extra {
+                                ui.label(format!("  [{}] Unknown Flag", f));
+                            }
+                        }
+                    });
+                },
+            );
+        });
 }

@@ -214,7 +214,7 @@ impl MonsterTextureCache {
             }
             None => {
                 eprintln!(
-                    "Failed to assemble monster sprite for {}/{} – falling back to raw first tile",
+                    "Failed to assemble monster sprite for {}/{}, falling back to raw first tile",
                     def_name, texture_name
                 );
                 let raw = self.textures.get(texture_name)?;
@@ -279,7 +279,7 @@ pub fn assemble_monster_sprite(
         .join("gfx")
         .join(format!("{}.xnb", texture_name));
 
-    let sheet = match sas2_parser::xnb_loader::load_texture_from_path(
+    let sheet = match load_texture_from_path(
         tex_path.to_str().unwrap_or(""),
     ) {
         Ok(img) => img,

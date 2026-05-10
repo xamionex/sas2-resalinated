@@ -9,6 +9,7 @@ use sas2_parser::loot_catalog::LootCatalog;
 use sas2_parser::monster_catalog::MonsterCatalog;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use crate::magic_slot::MagicSlotOverrides;
 
 pub struct ResalinatedApp {
     pub config: ResalinatedConfig,
@@ -21,6 +22,7 @@ pub struct ResalinatedApp {
     // Items tab
     pub selected_item_idx: Option<usize>,
     pub search_filter: String,
+    pub magic_slot_overrides: HashMap<String, HashMap<i32, MagicSlotOverrides>>,
     // Preset Info tab
     pub edit_folder_name: String,
     pub edit_meta: PresetMeta,
@@ -59,6 +61,7 @@ impl Default for ResalinatedApp {
             active_tab: Tab::Manager,
             selected_item_idx: None,
             search_filter: String::new(),
+            magic_slot_overrides: HashMap::new(),
             edit_folder_name: String::new(),
             edit_meta: PresetMeta {
                 name: String::new(),
@@ -188,6 +191,47 @@ impl ResalinatedApp {
         merged.to_bytes().map_err(|e| format!("Serialization error: {}", e))
     }
 
+    /// Merge magic overrides from all enabled presets (later ones override earlier ones) and return the resulting JSON string for magic_damage.json.
+    fn merged_magic_damage_json(&self) -> Result<String, String> {
+        let mut merged: HashMap<String, HashMap<i32, MagicSlotOverrides>> = HashMap::new();
+
+        for folder_name in self.preset_manager.enabled_presets() {
+            if folder_name == "Vanilla (Base)" { continue; }
+            if let Some(data) = self.preset_manager.get_preset_file(folder_name, "magic_overrides.json") {
+                let overrides: HashMap<String, HashMap<i32, MagicSlotOverrides>> =
+                    serde_json::from_slice(&data)
+                        .map_err(|e| format!("Invalid magic_overrides.json in '{}': {}", folder_name, e))?;
+                for (weapon, slots) in overrides {
+                    let entry = merged.entry(weapon).or_default();
+                    for (slot_id, over) in slots {
+                        entry.insert(slot_id, over);
+                    }
+                }
+            }
+        }
+
+        // Convert to the format expected by MagicDamagePatch
+        let mut output = serde_json::Map::new();
+        for (weapon, slots) in merged {
+            let mut weapon_entry = serde_json::Map::new();
+            for (slot_id, over) in slots {
+                let label = match slot_id {
+                    14 => "x",
+                    15 => "y",
+                    16 => "b",
+                    _ => continue,
+                };
+                weapon_entry.insert(label.to_string(), serde_json::json!(over.damage));
+            }
+            if !weapon_entry.is_empty() {
+                output.insert(weapon, serde_json::Value::Object(weapon_entry));
+            }
+        }
+
+        serde_json::to_string_pretty(&output)
+            .map_err(|e| format!("Serialization error: {}", e))
+    }
+
     /// Create a delta catalog containing only items that differ from vanilla.
     pub(crate) fn build_delta_catalog(&self) -> Result<Vec<u8>, String> {
         let vanilla = self.vanilla_catalog.as_ref().ok_or("No vanilla catalog")?;
@@ -262,6 +306,9 @@ impl ResalinatedApp {
             let monster_delta = self.build_delta_monster_catalog()?;
             self.preset_manager.save_preset_file(folder_name, "monsters.zms", &monster_delta)?;
         }
+        let magic_bytes = serde_json::to_vec(&self.magic_slot_overrides)
+            .map_err(|e| format!("Failed to serialize magic overrides: {}", e))?;
+        self.preset_manager.save_preset_file(folder_name, "magic_overrides.json", &magic_bytes)?;
         self.preset_manager.save_preset_meta(folder_name, &meta)?;
         self.preset_manager.refresh();
         Ok(())
@@ -311,6 +358,24 @@ impl ResalinatedApp {
             }
             Err(e) => self.error_message = Some(e),
         }
+
+        // Write magic_damage.json
+        match self.merged_magic_damage_json() {
+            Ok(json) => {
+                if let Some(gp) = &self.game_path {
+                    let config_dir = gp.join("BepInEx/config/amione.SaS2Resalter");
+                    if let Err(e) = std::fs::create_dir_all(&config_dir) {
+                        self.error_message = Some(format!("Failed to create config dir: {}", e));
+                    } else {
+                        let config_path = config_dir.join("magic_damage.json");
+                        if let Err(e) = std::fs::write(&config_path, json) {
+                            self.error_message = Some(format!("Failed to write magic_damage.json: {}", e));
+                        }
+                    }
+                }
+            }
+            Err(e) => self.error_message = Some(e),
+        }
     }
 
     /// Load a preset folder into the working catalog by merging it on top of vanilla.
@@ -337,6 +402,19 @@ impl ResalinatedApp {
                         } else {
                             merged.loot_defs.push(def); // new item
                         }
+                    }
+
+                    // Load magic overrides (if the preset contains them), otherwise start with empty map.
+                    if let Some(data) = self.preset_manager.get_preset_file(folder_name, "magic_overrides.json") {
+                        match serde_json::from_slice(&data) {
+                            Ok(map) => self.magic_slot_overrides = map,
+                            Err(e) => {
+                                self.magic_slot_overrides.clear();
+                                self.error_message = Some(format!("Failed to load magic overrides: {}", e));
+                            }
+                        }
+                    } else {
+                        self.magic_slot_overrides.clear();
                     }
 
                     // Rebuild the by_name map
@@ -503,6 +581,22 @@ impl ResalinatedApp {
             });
 
         self.settings_open = is_open;
+    }
+
+    /// Serialize the magic_slot_overrides map to a JSON byte vector.
+    pub fn save_magic_overrides_to_bytes(&self) -> Result<Vec<u8>, String> {
+        let json = serde_json::to_vec(&self.magic_slot_overrides)
+            .map_err(|e| format!("Failed to serialize magic overrides: {}", e))?;
+        Ok(json)
+    }
+
+    /// Deserialize the magic_slot_overrides map from bytes.
+    pub fn load_magic_overrides_from_bytes(&mut self, data: &[u8]) -> Result<(), String> {
+        let overrides: HashMap<String, HashMap<i32, MagicSlotOverrides>> =
+            serde_json::from_slice(data)
+                .map_err(|e| format!("Failed to deserialize magic overrides: {}", e))?;
+        self.magic_slot_overrides = overrides;
+        Ok(())
     }
 }
 

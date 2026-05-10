@@ -131,7 +131,7 @@ impl PresetManager {
     fn load_enabled_presets(&mut self) {
         self.enabled_presets.clear();
         let Some(ini_path) = &self.cfg_path else { return };
-        let Ok(file) = fs::File::open(ini_path) else { return };
+        let Ok(file) = File::open(ini_path) else { return };
         let reader = BufReader::new(file);
         for line in reader.lines().flatten() {
             let line = line.trim();
@@ -225,7 +225,7 @@ impl PresetManager {
 
     /// Import a preset from a zip file. Expects a folder at the root of the zip.
     pub fn import_preset(&mut self, zip_path: &Path) -> Result<(), String> {
-        let file = fs::File::open(zip_path).map_err(|e| e.to_string())?;
+        let file = File::open(zip_path).map_err(|e| e.to_string())?;
         let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
 
         // Find the common prefix (top-level folder)
@@ -267,7 +267,7 @@ impl PresetManager {
                 if let Some(parent) = out_path.parent() {
                     fs::create_dir_all(parent).map_err(|e| e.to_string())?;
                 }
-                let mut outfile = fs::File::create(&out_path).map_err(|e| e.to_string())?;
+                let mut outfile = File::create(&out_path).map_err(|e| e.to_string())?;
                 std::io::copy(&mut entry, &mut outfile).map_err(|e| e.to_string())?;
             }
         }
@@ -283,7 +283,7 @@ impl PresetManager {
             return Err(format!("Preset folder '{}' not found", folder_name));
         }
 
-        let file = fs::File::create(dest_file).map_err(|e| e.to_string())?;
+        let file = File::create(dest_file).map_err(|e| e.to_string())?;
         let mut zip = ZipWriter::new(file);
         let options = FileOptions::default()
             .compression_method(zip::CompressionMethod::Deflated);

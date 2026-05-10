@@ -4,6 +4,7 @@ mod preset;
 pub mod tabs;
 pub mod atlas;
 mod catalog;
+pub mod magic_slot;
 
 use crate::app::ResalinatedApp;
 #[cfg(not(debug_assertions))]

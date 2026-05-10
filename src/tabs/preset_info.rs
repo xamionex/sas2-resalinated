@@ -30,7 +30,7 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
 
     ui.separator();
 
-    // Overwrite confirmation – only clear when user explicitly answers
+    // Overwrite confirmation, only clear when user explicitly answers
     if let Some(ref existing_folder) = app.confirm_overwrite_folder.clone() {
         let overwrite_name = existing_folder.clone();
         ui.colored_label(
