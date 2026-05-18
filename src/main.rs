@@ -1,10 +1,10 @@
 mod app;
-mod config;
-mod preset;
-pub mod tabs;
 pub mod atlas;
 mod catalog;
+mod config;
 pub mod magic_slot;
+mod preset;
+pub mod tabs;
 
 use crate::app::ResalinatedApp;
 #[cfg(not(debug_assertions))]

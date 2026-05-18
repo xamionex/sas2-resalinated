@@ -17,9 +17,9 @@ pub struct PresetMeta {
 
 /// A preset located in the presets folder.
 pub struct Preset {
-    pub folder_name: String,    // directory name inside presets/
+    pub folder_name: String, // directory name inside presets/
     pub meta: PresetMeta,
-    pub loot_data: Vec<u8>,     // contents of loot.zls
+    pub loot_data: Vec<u8>, // contents of loot.zls
 }
 
 pub struct PresetManager {
@@ -130,8 +130,12 @@ impl PresetManager {
 
     fn load_enabled_presets(&mut self) {
         self.enabled_presets.clear();
-        let Some(ini_path) = &self.cfg_path else { return };
-        let Ok(file) = File::open(ini_path) else { return };
+        let Some(ini_path) = &self.cfg_path else {
+            return;
+        };
+        let Ok(file) = File::open(ini_path) else {
+            return;
+        };
         let reader = BufReader::new(file);
         for line in reader.lines().flatten() {
             let line = line.trim();
@@ -151,7 +155,9 @@ impl PresetManager {
 
     /// Write the enabled presets back to the INI file.
     pub fn save_enabled_presets(&self) {
-        let Some(ini_path) = &self.cfg_path else { return };
+        let Some(ini_path) = &self.cfg_path else {
+            return;
+        };
         let content = match fs::read_to_string(ini_path) {
             Ok(c) => c,
             Err(_) => {
@@ -285,8 +291,7 @@ impl PresetManager {
 
         let file = File::create(dest_file).map_err(|e| e.to_string())?;
         let mut zip = ZipWriter::new(file);
-        let options = FileOptions::default()
-            .compression_method(zip::CompressionMethod::Deflated);
+        let options = FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
         fn add_dir_to_zip(
             zip: &mut ZipWriter<File>,
@@ -328,7 +333,12 @@ impl PresetManager {
     }
 
     /// Write any file into a preset folder.
-    pub fn save_preset_file(&self, folder_name: &str, filename: &str, data: &[u8]) -> Result<(), String> {
+    pub fn save_preset_file(
+        &self,
+        folder_name: &str,
+        filename: &str,
+        data: &[u8],
+    ) -> Result<(), String> {
         let dir = self.presets_dir.join(folder_name);
         fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         let path = dir.join(filename);
@@ -377,7 +387,12 @@ impl PresetManager {
     }
 
     /// Create a new preset with the given folder name and metadata.
-    pub fn create_preset(&mut self, folder_name: &str, meta: PresetMeta, loot_data: &[u8]) -> Result<(), String> {
+    pub fn create_preset(
+        &mut self,
+        folder_name: &str,
+        meta: PresetMeta,
+        loot_data: &[u8],
+    ) -> Result<(), String> {
         let dir = self.presets_dir.join(folder_name);
         if dir.exists() {
             return Err(format!("Preset '{}' already exists", folder_name));

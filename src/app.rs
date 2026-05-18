@@ -1,6 +1,9 @@
 use crate::atlas::{ItemAtlas, MonsterTextureCache};
 use crate::catalog::{load_loot_catalog, load_monster_catalog};
-use crate::config::{default_drag_sensitivity, default_item_font_size, default_item_icon_size, ResalinatedConfig};
+use crate::config::{
+    default_drag_sensitivity, default_item_font_size, default_item_icon_size, ResalinatedConfig,
+};
+use crate::magic_slot::MagicSlotOverrides;
 use crate::preset::{PresetManager, PresetMeta};
 use crate::tabs::{items, manager, monsters, preset_info, Tab};
 use eframe::egui;
@@ -9,7 +12,6 @@ use sas2_parser::loot_catalog::LootCatalog;
 use sas2_parser::monster_catalog::MonsterCatalog;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use crate::magic_slot::MagicSlotOverrides;
 
 pub struct ResalinatedApp {
     pub config: ResalinatedConfig,
@@ -45,6 +47,9 @@ pub struct ResalinatedApp {
     pub catalog_error: Option<String>,
     pub monster_catalog_error: Option<String>,
     pub config_save_timer: f32,
+    pub magic_item_picker_open: bool,
+    pub magic_item_search: String,
+    pub magic_item_picker_target_slot_id: Option<i32>,
 }
 
 impl Default for ResalinatedApp {
@@ -86,6 +91,9 @@ impl Default for ResalinatedApp {
             catalog_error: None,
             monster_catalog_error: None,
             config_save_timer: 0.0,
+            magic_item_picker_open: false,
+            magic_item_search: String::new(),
+            magic_item_picker_target_slot_id: None,
         };
 
         // Load catalogs immediately if we already have a game path stored
@@ -121,7 +129,9 @@ impl ResalinatedApp {
                 self.monster_catalog_error = None;
 
                 // start background texture loading
-                let names: Vec<String> = cat.monsters.iter()
+                let names: Vec<String> = cat
+                    .monsters
+                    .iter()
                     .filter(|m| !m.texture.is_empty())
                     .map(|m| m.texture.clone())
                     .collect();
@@ -155,7 +165,9 @@ impl ResalinatedApp {
 
     /// Merge all enabled presets (starting from vanilla) and return the final catalog bytes.
     pub(crate) fn merge_enabled_presets(&self) -> Result<Vec<u8>, String> {
-        let vanilla = self.vanilla_catalog.as_ref()
+        let vanilla = self
+            .vanilla_catalog
+            .as_ref()
             .ok_or("No vanilla catalog loaded")?;
         let mut merged = vanilla.clone(); // now works: LootCatalog is Clone
 
@@ -167,8 +179,8 @@ impl ResalinatedApp {
                 let preset = LootCatalog::load_from_bytes(&preset_data)
                     .map_err(|e| format!("Failed to parse preset '{}': {}", folder_name, e))?;
                 for def in preset.loot_defs {
-                    if let Some(existing) = merged.loot_defs.iter_mut()
-                        .find(|d| d.name == def.name) {
+                    if let Some(existing) = merged.loot_defs.iter_mut().find(|d| d.name == def.name)
+                    {
                         *existing = def;
                     } else {
                         merged.loot_defs.push(def);
@@ -183,12 +195,30 @@ impl ResalinatedApp {
             merged.by_name.insert(def.name.clone(), i);
         }
 
-        merged.black_starstone_index = merged.loot_defs.iter().position(|d| d.name == "black_pearl")
-            .or_else(|| merged.loot_defs.iter().position(|d| d.title.iter().any(|t| t.contains("Black Starstone"))));
-        merged.gray_starstone_index = merged.loot_defs.iter().position(|d| d.name == "gray_pearl")
-            .or_else(|| merged.loot_defs.iter().position(|d| d.title.iter().any(|t| t.contains("Gray Starstone"))));
+        merged.black_starstone_index = merged
+            .loot_defs
+            .iter()
+            .position(|d| d.name == "black_pearl")
+            .or_else(|| {
+                merged
+                    .loot_defs
+                    .iter()
+                    .position(|d| d.title.iter().any(|t| t.contains("Black Starstone")))
+            });
+        merged.gray_starstone_index = merged
+            .loot_defs
+            .iter()
+            .position(|d| d.name == "gray_pearl")
+            .or_else(|| {
+                merged
+                    .loot_defs
+                    .iter()
+                    .position(|d| d.title.iter().any(|t| t.contains("Gray Starstone")))
+            });
 
-        merged.to_bytes().map_err(|e| format!("Serialization error: {}", e))
+        merged
+            .to_bytes()
+            .map_err(|e| format!("Serialization error: {}", e))
     }
 
     /// Merge magic overrides from all enabled presets (later ones override earlier ones) and return the resulting JSON string for magic_damage.json.
@@ -196,11 +226,17 @@ impl ResalinatedApp {
         let mut merged: HashMap<String, HashMap<i32, MagicSlotOverrides>> = HashMap::new();
 
         for folder_name in self.preset_manager.enabled_presets() {
-            if folder_name == "Vanilla (Base)" { continue; }
-            if let Some(data) = self.preset_manager.get_preset_file(folder_name, "magic_overrides.json") {
+            if folder_name == "Vanilla (Base)" {
+                continue;
+            }
+            if let Some(data) = self
+                .preset_manager
+                .get_preset_file(folder_name, "magic_overrides.json")
+            {
                 let overrides: HashMap<String, HashMap<i32, MagicSlotOverrides>> =
-                    serde_json::from_slice(&data)
-                        .map_err(|e| format!("Invalid magic_overrides.json in '{}': {}", folder_name, e))?;
+                    serde_json::from_slice(&data).map_err(|e| {
+                        format!("Invalid magic_overrides.json in '{}': {}", folder_name, e)
+                    })?;
                 for (weapon, slots) in overrides {
                     let entry = merged.entry(weapon).or_default();
                     for (slot_id, over) in slots {
@@ -228,8 +264,7 @@ impl ResalinatedApp {
             }
         }
 
-        serde_json::to_string_pretty(&output)
-            .map_err(|e| format!("Serialization error: {}", e))
+        serde_json::to_string_pretty(&output).map_err(|e| format!("Serialization error: {}", e))
     }
 
     /// Create a delta catalog containing only items that differ from vanilla.
@@ -254,20 +289,32 @@ impl ResalinatedApp {
             }
         }
 
-        delta.to_bytes().map_err(|e| format!("Delta serialization error: {}", e))
+        delta
+            .to_bytes()
+            .map_err(|e| format!("Delta serialization error: {}", e))
     }
 
     // Merge monsters enabled presets
     pub(crate) fn merge_enabled_monster_presets(&self) -> Result<Vec<u8>, String> {
-        let vanilla = self.vanilla_monster_catalog.as_ref().ok_or("No vanilla monster catalog")?;
+        let vanilla = self
+            .vanilla_monster_catalog
+            .as_ref()
+            .ok_or("No vanilla monster catalog")?;
         let mut merged = vanilla.clone();
         for folder_name in self.preset_manager.enabled_presets() {
-            if folder_name == "Vanilla (Base)" { continue; }
-            if let Some(data) = self.preset_manager.get_preset_file(folder_name, "monsters.zms") {
-                let preset = MonsterCatalog::load_from_bytes(&data)
-                    .map_err(|e| format!("Failed to parse monster preset '{}': {}", folder_name, e))?;
+            if folder_name == "Vanilla (Base)" {
+                continue;
+            }
+            if let Some(data) = self
+                .preset_manager
+                .get_preset_file(folder_name, "monsters.zms")
+            {
+                let preset = MonsterCatalog::load_from_bytes(&data).map_err(|e| {
+                    format!("Failed to parse monster preset '{}': {}", folder_name, e)
+                })?;
                 for def in preset.monsters {
-                    if let Some(existing) = merged.monsters.iter_mut().find(|d| d.name == def.name) {
+                    if let Some(existing) = merged.monsters.iter_mut().find(|d| d.name == def.name)
+                    {
                         *existing = def;
                     } else {
                         merged.monsters.push(def);
@@ -279,14 +326,25 @@ impl ResalinatedApp {
         for (i, def) in merged.monsters.iter().enumerate() {
             merged.by_name.insert(def.name.clone(), i as i32);
         }
-        merged.to_bytes().map_err(|e| format!("Serialization error: {}", e))
+        merged
+            .to_bytes()
+            .map_err(|e| format!("Serialization error: {}", e))
     }
 
     // Build delta monster catalog
     pub(crate) fn build_delta_monster_catalog(&self) -> Result<Vec<u8>, String> {
-        let vanilla = self.vanilla_monster_catalog.as_ref().ok_or("No vanilla monster catalog")?;
-        let working = self.working_monster_catalog.as_ref().ok_or("No working monster catalog")?;
-        let mut delta = MonsterCatalog { monsters: Vec::new(), by_name: HashMap::new() };
+        let vanilla = self
+            .vanilla_monster_catalog
+            .as_ref()
+            .ok_or("No vanilla monster catalog")?;
+        let working = self
+            .working_monster_catalog
+            .as_ref()
+            .ok_or("No working monster catalog")?;
+        let mut delta = MonsterCatalog {
+            monsters: Vec::new(),
+            by_name: HashMap::new(),
+        };
         for def in &working.monsters {
             let is_new_or_modified = match vanilla.monsters.iter().find(|vd| vd.name == def.name) {
                 Some(vdef) => def.to_bytes().ok() != vdef.to_bytes().ok(),
@@ -296,19 +354,24 @@ impl ResalinatedApp {
                 delta.monsters.push(def.clone());
             }
         }
-        delta.to_bytes().map_err(|e| format!("Delta serialization error: {}", e))
+        delta
+            .to_bytes()
+            .map_err(|e| format!("Delta serialization error: {}", e))
     }
 
     pub fn save_preset(&mut self, folder_name: &str, meta: PresetMeta) -> Result<(), String> {
         let loot_delta = self.build_delta_catalog()?;
-        self.preset_manager.save_preset_loot(folder_name, &loot_delta)?;
+        self.preset_manager
+            .save_preset_loot(folder_name, &loot_delta)?;
         if let Some(_) = &self.working_monster_catalog {
             let monster_delta = self.build_delta_monster_catalog()?;
-            self.preset_manager.save_preset_file(folder_name, "monsters.zms", &monster_delta)?;
+            self.preset_manager
+                .save_preset_file(folder_name, "monsters.zms", &monster_delta)?;
         }
         let magic_bytes = serde_json::to_vec(&self.magic_slot_overrides)
             .map_err(|e| format!("Failed to serialize magic overrides: {}", e))?;
-        self.preset_manager.save_preset_file(folder_name, "magic_overrides.json", &magic_bytes)?;
+        self.preset_manager
+            .save_preset_file(folder_name, "magic_overrides.json", &magic_bytes)?;
         self.preset_manager.save_preset_meta(folder_name, &meta)?;
         self.preset_manager.refresh();
         Ok(())
@@ -329,7 +392,8 @@ impl ResalinatedApp {
                             self.working_catalog = Some(cat);
                             self.error_message = None;
                         } else {
-                            self.error_message = Some("Failed to parse merged loot.zls".to_string());
+                            self.error_message =
+                                Some("Failed to parse merged loot.zls".to_string());
                         }
                     }
                 }
@@ -351,7 +415,8 @@ impl ResalinatedApp {
                             self.working_monster_catalog = Some(cat);
                             self.error_message = None;
                         } else {
-                            self.error_message = Some("Failed to parse merged monsters.zms".to_string());
+                            self.error_message =
+                                Some("Failed to parse merged monsters.zms".to_string());
                         }
                     }
                 }
@@ -369,7 +434,8 @@ impl ResalinatedApp {
                     } else {
                         let config_path = config_dir.join("magic_damage.json");
                         if let Err(e) = std::fs::write(&config_path, json) {
-                            self.error_message = Some(format!("Failed to write magic_damage.json: {}", e));
+                            self.error_message =
+                                Some(format!("Failed to write magic_damage.json: {}", e));
                         }
                     }
                 }
@@ -396,21 +462,26 @@ impl ResalinatedApp {
 
                     // Overlay the presets items
                     for def in preset_cat.loot_defs {
-                        if let Some(existing) = merged.loot_defs.iter_mut()
-                            .find(|d| d.name == def.name) {
-                            *existing = def;   // replace modified item
+                        if let Some(existing) =
+                            merged.loot_defs.iter_mut().find(|d| d.name == def.name)
+                        {
+                            *existing = def; // replace modified item
                         } else {
                             merged.loot_defs.push(def); // new item
                         }
                     }
 
                     // Load magic overrides (if the preset contains them), otherwise start with empty map.
-                    if let Some(data) = self.preset_manager.get_preset_file(folder_name, "magic_overrides.json") {
+                    if let Some(data) = self
+                        .preset_manager
+                        .get_preset_file(folder_name, "magic_overrides.json")
+                    {
                         match serde_json::from_slice(&data) {
                             Ok(map) => self.magic_slot_overrides = map,
                             Err(e) => {
                                 self.magic_slot_overrides.clear();
-                                self.error_message = Some(format!("Failed to load magic overrides: {}", e));
+                                self.error_message =
+                                    Some(format!("Failed to load magic overrides: {}", e));
                             }
                         }
                     } else {
@@ -428,20 +499,31 @@ impl ResalinatedApp {
                         .loot_defs
                         .iter()
                         .position(|d| d.name == "black_pearl")
-                        .or_else(|| merged.loot_defs.iter()
-                            .position(|d| d.title.iter().any(|t| t.contains("Black Starstone"))));
+                        .or_else(|| {
+                            merged
+                                .loot_defs
+                                .iter()
+                                .position(|d| d.title.iter().any(|t| t.contains("Black Starstone")))
+                        });
                     merged.gray_starstone_index = merged
                         .loot_defs
                         .iter()
                         .position(|d| d.name == "gray_pearl")
-                        .or_else(|| merged.loot_defs.iter()
-                            .position(|d| d.title.iter().any(|t| t.contains("Gray Starstone"))));
+                        .or_else(|| {
+                            merged
+                                .loot_defs
+                                .iter()
+                                .position(|d| d.title.iter().any(|t| t.contains("Gray Starstone")))
+                        });
 
                     self.working_catalog = Some(merged);
 
                     // Also load the presets metadata
-                    if let Some(p) = self.preset_manager.installed_presets()
-                        .iter().find(|p| p.folder_name == folder_name)
+                    if let Some(p) = self
+                        .preset_manager
+                        .installed_presets()
+                        .iter()
+                        .find(|p| p.folder_name == folder_name)
                     {
                         self.edit_meta = p.meta.clone();
                         self.edit_folder_name = p.folder_name.clone();
@@ -456,16 +538,23 @@ impl ResalinatedApp {
         }
 
         // Load monster data
-        if let Some(data) = self.preset_manager.get_preset_file(folder_name, "monsters.zms") {
+        if let Some(data) = self
+            .preset_manager
+            .get_preset_file(folder_name, "monsters.zms")
+        {
             match MonsterCatalog::load_from_bytes(&data) {
                 Ok(preset_cat) => {
                     let vanilla = match &self.vanilla_monster_catalog {
                         Some(v) => v.clone(),
-                        None => { return; } // just skip if no vanilla monsters
+                        None => {
+                            return;
+                        } // just skip if no vanilla monsters
                     };
                     let mut merged = vanilla;
                     for def in preset_cat.monsters {
-                        if let Some(existing) = merged.monsters.iter_mut().find(|d| d.name == def.name) {
+                        if let Some(existing) =
+                            merged.monsters.iter_mut().find(|d| d.name == def.name)
+                        {
                             *existing = def;
                         } else {
                             merged.monsters.push(def);
@@ -477,12 +566,19 @@ impl ResalinatedApp {
                     }
                     self.working_monster_catalog = Some(merged);
                 }
-                Err(e) => self.error_message = Some(format!("Failed to parse monster preset: {}", e)),
+                Err(e) => {
+                    self.error_message = Some(format!("Failed to parse monster preset: {}", e))
+                }
             }
         }
 
         // Load metadata
-        if let Some(p) = self.preset_manager.installed_presets().iter().find(|p| p.folder_name == folder_name) {
+        if let Some(p) = self
+            .preset_manager
+            .installed_presets()
+            .iter()
+            .find(|p| p.folder_name == folder_name)
+        {
             self.edit_meta = p.meta.clone();
             self.edit_folder_name = p.folder_name.clone();
         }
@@ -555,11 +651,11 @@ impl ResalinatedApp {
                             )
                             .changed()
                         {
-                        self.config_save_timer = 0.1;
+                            self.config_save_timer = 0.1;
                         }
                         if ui.button("Reset").clicked() {
                             self.config.drag_value_sensitivity = default_drag_sensitivity();
-                        self.config_save_timer = 0.1;
+                            self.config_save_timer = 0.1;
                         }
                     });
 
@@ -574,7 +670,7 @@ impl ResalinatedApp {
                             )
                             .changed()
                         {
-                        self.config_save_timer = 0.1;
+                            self.config_save_timer = 0.1;
                         }
                     });
                 });

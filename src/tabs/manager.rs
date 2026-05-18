@@ -1,7 +1,7 @@
-use std::time::Instant;
 use crate::app::ResalinatedApp;
 use eframe::egui;
 use egui::Ui;
+use std::time::Instant;
 
 pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
     let full_width = ui.available_width();
@@ -24,13 +24,20 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
                 .preset_manager
                 .installed_presets()
                 .iter()
-                .filter(|p| !app.preset_manager.enabled_presets().contains(&p.folder_name))
+                .filter(|p| {
+                    !app.preset_manager
+                        .enabled_presets()
+                        .contains(&p.folder_name)
+                })
                 .map(|p| p.folder_name.clone())
                 .collect();
 
             egui::ScrollArea::vertical().show(ui, |ui| {
                 for (i, name) in available.iter().enumerate() {
-                    if ui.selectable_label(app.manager_selected_available == Some(i), name).clicked() {
+                    if ui
+                        .selectable_label(app.manager_selected_available == Some(i), name)
+                        .clicked()
+                    {
                         app.manager_selected_available = Some(i);
                     }
                 }
@@ -127,7 +134,10 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
         let enabled = app.preset_manager.enabled_presets().to_vec();
         egui::ScrollArea::vertical().show(ui, |ui| {
             for (i, name) in enabled.iter().enumerate() {
-                if ui.selectable_label(app.manager_selected_enabled == Some(i), name).clicked() {
+                if ui
+                    .selectable_label(app.manager_selected_enabled == Some(i), name)
+                    .clicked()
+                {
                     app.manager_selected_enabled = Some(i);
                 }
             }
@@ -187,7 +197,9 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
             // Add Delete button (only for non-vanilla)
             let is_vanilla = if let Some(idx) = app.manager_selected_enabled {
                 &enabled[idx] == "Vanilla (Base)"
-            } else { false };
+            } else {
+                false
+            };
             if !is_vanilla {
                 if ui.button("Delete").clicked() {
                     if let Some(idx) = app.manager_selected_enabled {

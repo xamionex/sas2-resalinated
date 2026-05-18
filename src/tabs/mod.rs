@@ -1,7 +1,8 @@
-pub mod preset_info;
 pub mod items;
 pub mod manager;
 pub mod monsters;
+pub mod preset_info;
+pub mod utils;
 
 #[derive(PartialEq)]
 pub enum Tab {

@@ -1,8 +1,8 @@
 use crate::app::ResalinatedApp;
 use crate::atlas::ItemAtlas;
-use crate::magic_slot::MagicSlotOverrides;
+use crate::tabs::utils::{field_row, CHANGED_COLOR};
 use eframe::egui;
-use egui::{Color32, Response, Ui};
+use egui::{Response, Ui};
 use sas2_parser::loot_catalog::{LootDef, LootFieldValue};
 use sas2_parser::loot_names;
 use std::collections::HashMap;
@@ -55,13 +55,17 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
     };
 
     // Build magic items list once for the dropdown picker
-    let magic_items: Vec<(String, String)> = app.working_catalog
+    let mut magic_items: Vec<(String, String)> = app
+        .working_catalog
         .as_ref()
         .map(|c| {
-            c.loot_defs.iter()
+            c.loot_defs
+                .iter()
                 .filter(|d| d.type_ == 7)
                 .map(|d| {
-                    let display = d.title.first()
+                    let display = d
+                        .title
+                        .first()
                         .filter(|t| !t.is_empty())
                         .cloned()
                         .unwrap_or_else(|| d.name.clone());
@@ -70,6 +74,9 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
                 .collect()
         })
         .unwrap_or_default();
+
+    // Sort by display text (second element)
+    magic_items.sort_by(|a, b| a.1.cmp(&b.1));
 
     // Right panel: item editor
     let right_panel = egui::Panel::right("item_details")
@@ -80,34 +87,7 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
         .size_range(min_size..=full_width * 0.8)
         .show_inside(ui, |ui| {
             ui.set_min_width(ui.available_width());
-            if let Some(idx) = app.selected_item_idx {
-                let vanilla_def = app.vanilla_catalog.as_ref().and_then(|vc| {
-                    app.working_catalog
-                        .as_ref()
-                        .unwrap()
-                        .loot_defs
-                        .get(idx)
-                        .and_then(|def| vc.by_name.get(&def.name).map(|&i| &vc.loot_defs[i]))
-                }).cloned();
-                if let Some(def) = app.working_catalog
-                    .as_mut()
-                    .unwrap()
-                    .loot_defs
-                    .get_mut(idx)
-                {
-                    show_lootdef_editor(
-                        ui,
-                        def,
-                        vanilla_def.as_ref(),
-                        &magic_items,
-                        &mut app.magic_slot_overrides,
-                    );
-                } else {
-                    ui.label("Invalid selection.");
-                }
-            } else {
-                ui.label("Select an item to edit.");
-            }
+            show_lootdef_editor(app, ui, &magic_items);
         });
 
     let actual_width = right_panel.response.rect.width();
@@ -132,7 +112,8 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
         let vanilla = app.vanilla_catalog.as_ref();
 
         // Build filtered list
-        let filtered_indices: Vec<(usize, &LootDef)> = app.working_catalog
+        let filtered_indices: Vec<(usize, &LootDef)> = app
+            .working_catalog
             .as_ref()
             .unwrap()
             .loot_defs
@@ -140,16 +121,27 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
             .enumerate()
             .filter(|(_, d)| {
                 let matches_search = d.name.to_lowercase().contains(&filter)
-                    || d.title.first().map(|t| t.to_lowercase().contains(&filter)).unwrap_or(false);
-                if !matches_search { return false; }
+                    || d.title
+                        .first()
+                        .map(|t| t.to_lowercase().contains(&filter))
+                        .unwrap_or(false);
+                if !matches_search {
+                    return false;
+                }
                 if app.show_only_changed_items {
                     if let Some(vanilla) = vanilla {
                         if let Some(&vi) = vanilla.by_name.get(&d.name) {
                             let vdef = &vanilla.loot_defs[vi];
                             d.to_bytes().ok() != vdef.to_bytes().ok()
-                        } else { true }
-                    } else { true }
-                } else { true }
+                        } else {
+                            true
+                        }
+                    } else {
+                        true
+                    }
+                } else {
+                    true
+                }
             })
             .collect();
 
@@ -191,7 +183,9 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
                                 }
 
                                 ui.set_max_width(btn_w);
-                                let display_name = def.title.first()
+                                let display_name = def
+                                    .title
+                                    .first()
                                     .filter(|t| !t.is_empty())
                                     .cloned()
                                     .unwrap_or_else(|| def.name.clone());
@@ -206,22 +200,43 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
     });
 }
 
-const CHANGED_COLOR: Color32 = Color32::from_rgb(200, 160, 0);
-
 /// 'magic_items': (internal_name, display_title) pairs for all magic-type items in the catalog.
-fn show_lootdef_editor(
-    ui: &mut Ui,
-    def: &mut LootDef,
-    vanilla: Option<&LootDef>,
-    magic_items: &[(String, String)],
-    magic_slot_overrides: &mut HashMap<String, HashMap<i32, MagicSlotOverrides>>,
-) {
+fn show_lootdef_editor(app: &mut ResalinatedApp, ui: &mut Ui, magic_items: &[(String, String)]) {
+    // Get the selected item index
+    let Some(idx) = app.selected_item_idx else {
+        ui.label("Select an item to edit.");
+        return;
+    };
+
+    // Get working catalog and mutable def
+    let working_catalog = match app.working_catalog.as_mut() {
+        Some(c) => c,
+        None => {
+            ui.label("No working catalog.");
+            return;
+        }
+    };
+    let def = match working_catalog.loot_defs.get_mut(idx) {
+        Some(d) => d,
+        None => {
+            ui.label("Invalid selection.");
+            return;
+        }
+    };
+
+    // Get vanilla def for comparison
+    let vanilla = app
+        .vanilla_catalog
+        .as_ref()
+        .and_then(|vc| vc.by_name.get(&def.name).map(|&i| &vc.loot_defs[i]))
+        .cloned();
+
     egui::ScrollArea::vertical()
         .auto_shrink([false; 2])
         .show(ui, |ui| {
             ui.heading("Loot Definition");
 
-            if let Some(vanilla_def) = vanilla {
+            if let Some(vanilla_def) = &vanilla {
                 if ui.button("Reset Item to Vanilla").clicked() {
                     *def = vanilla_def.clone();
                     return;
@@ -230,33 +245,53 @@ fn show_lootdef_editor(
 
             ui.separator();
 
-            // Scalar fields
-
-            // Name
-            field_row(ui, "Name:", vanilla.map(|v| def.name != v.name).unwrap_or(true), |ui| {
-                ui.text_edit_singleline(&mut def.name);
-                if let Some(v) = vanilla {
-                    if def.name != v.name && ui.button("↺").clicked() { def.name = v.name.clone(); }
-                }
-            });
-
-            // Title
-            field_row(ui, "Title:", vanilla.map(|v| def.title[0] != v.title[0]).unwrap_or(true), |ui| {
-                ui.text_edit_singleline(&mut def.title[0]);
-                if let Some(v) = vanilla {
-                    if def.title[0] != v.title[0] && ui.button("↺").clicked() { def.title[0] = v.title[0].clone(); }
-                }
-            });
-
-            // Description
-            field_row(ui, "Description:", vanilla.map(|v| def.description[0] != v.description[0]).unwrap_or(true), |ui| {
-                ui.text_edit_singleline(&mut def.description[0]);
-                if let Some(v) = vanilla {
-                    if def.description[0] != v.description[0] && ui.button("↺").clicked() {
-                        def.description[0] = v.description[0].clone();
+            field_row(
+                ui,
+                "Name:",
+                vanilla.as_ref().map(|v| def.name != v.name).unwrap_or(true),
+                |ui| {
+                    ui.text_edit_singleline(&mut def.name);
+                    if let Some(v) = &vanilla {
+                        if def.name != v.name && ui.button("↺").clicked() {
+                            def.name = v.name.clone();
+                        }
                     }
-                }
-            });
+                },
+            );
+
+            field_row(
+                ui,
+                "Title:",
+                vanilla
+                    .as_ref()
+                    .map(|v| def.title[0] != v.title[0])
+                    .unwrap_or(true),
+                |ui| {
+                    ui.text_edit_singleline(&mut def.title[0]);
+                    if let Some(v) = &vanilla {
+                        if def.title[0] != v.title[0] && ui.button("↺").clicked() {
+                            def.title[0] = v.title[0].clone();
+                        }
+                    }
+                },
+            );
+
+            field_row(
+                ui,
+                "Description:",
+                vanilla
+                    .as_ref()
+                    .map(|v| def.description[0] != v.description[0])
+                    .unwrap_or(true),
+                |ui| {
+                    ui.text_edit_singleline(&mut def.description[0]);
+                    if let Some(v) = &vanilla {
+                        if def.description[0] != v.description[0] && ui.button("↺").clicked() {
+                            def.description[0] = v.description[0].clone();
+                        }
+                    }
+                },
+            );
 
             ui.label(format!(
                 "Type: {} ({}) | Subtype: {} ({})",
@@ -266,38 +301,73 @@ fn show_lootdef_editor(
                 loot_names::get_subtype_name(def.type_, def.sub_type)
             ));
 
-            // Cost
-            field_row(ui, "Cost:", vanilla.map(|v| (def.cost - v.cost).abs() > 0.001).unwrap_or(true), |ui| {
-                let mut cost = def.cost;
-                if ui.add(egui::DragValue::new(&mut cost).speed(1.0)).changed() { def.cost = cost; }
-                if let Some(v) = vanilla {
-                    if (cost - v.cost).abs() > 0.001 && ui.button("↺").clicked() { def.cost = v.cost; }
-                }
-            });
+            field_row(
+                ui,
+                "Cost:",
+                vanilla
+                    .as_ref()
+                    .map(|v| (def.cost - v.cost).abs() > 0.001)
+                    .unwrap_or(true),
+                |ui| {
+                    let mut cost = def.cost;
+                    if ui.add(egui::DragValue::new(&mut cost).speed(1.0)).changed() {
+                        def.cost = cost;
+                    }
+                    if let Some(v) = &vanilla {
+                        if (cost - v.cost).abs() > 0.001 && ui.button("↺").clicked() {
+                            def.cost = v.cost;
+                        }
+                    }
+                },
+            );
 
-            // Img
-            field_row(ui, "Img:", vanilla.map(|v| def.img != v.img).unwrap_or(true), |ui| {
-                ui.add(egui::DragValue::new(&mut def.img));
-                if let Some(v) = vanilla {
-                    if def.img != v.img && ui.button("↺").clicked() { def.img = v.img; }
-                }
-            });
+            field_row(
+                ui,
+                "Img:",
+                vanilla.as_ref().map(|v| def.img != v.img).unwrap_or(true),
+                |ui| {
+                    ui.add(egui::DragValue::new(&mut def.img));
+                    if let Some(v) = &vanilla {
+                        if def.img != v.img && ui.button("↺").clicked() {
+                            def.img = v.img;
+                        }
+                    }
+                },
+            );
 
-            // AltImg
-            field_row(ui, "AltImg:", vanilla.map(|v| def.alt_img != v.alt_img).unwrap_or(true), |ui| {
-                ui.add(egui::DragValue::new(&mut def.alt_img));
-                if let Some(v) = vanilla {
-                    if def.alt_img != v.alt_img && ui.button("↺").clicked() { def.alt_img = v.alt_img; }
-                }
-            });
+            field_row(
+                ui,
+                "AltImg:",
+                vanilla
+                    .as_ref()
+                    .map(|v| def.alt_img != v.alt_img)
+                    .unwrap_or(true),
+                |ui| {
+                    ui.add(egui::DragValue::new(&mut def.alt_img));
+                    if let Some(v) = &vanilla {
+                        if def.alt_img != v.alt_img && ui.button("↺").clicked() {
+                            def.alt_img = v.alt_img;
+                        }
+                    }
+                },
+            );
 
-            // Texture
-            field_row(ui, "Texture:", vanilla.map(|v| def.texture != v.texture).unwrap_or(true), |ui| {
-                ui.text_edit_singleline(&mut def.texture);
-                if let Some(v) = vanilla {
-                    if def.texture != v.texture && ui.button("↺").clicked() { def.texture = v.texture.clone(); }
-                }
-            });
+            field_row(
+                ui,
+                "Texture:",
+                vanilla
+                    .as_ref()
+                    .map(|v| def.texture != v.texture)
+                    .unwrap_or(true),
+                |ui| {
+                    ui.text_edit_singleline(&mut def.texture);
+                    if let Some(v) = &vanilla {
+                        if def.texture != v.texture && ui.button("↺").clicked() {
+                            def.texture = v.texture.clone();
+                        }
+                    }
+                },
+            );
 
             ui.separator();
 
@@ -311,18 +381,21 @@ fn show_lootdef_editor(
                         for field in def.fields.iter_mut() {
                             let field_name = loot_names::get_field_name(def.type_, field.id);
                             let changed = vanilla
+                                .as_ref()
                                 .and_then(|vdef| vdef.fields.iter().find(|vf| vf.id == field.id))
                                 .map(|vf| values_differ(&field.value, &vf.value))
                                 .unwrap_or(true);
 
                             let label = if changed {
-                                egui::RichText::new(format!("{}: ", field_name)).color(CHANGED_COLOR)
+                                egui::RichText::new(format!("{}: ", field_name))
+                                    .color(CHANGED_COLOR)
                             } else {
                                 egui::RichText::new(format!("{}: ", field_name))
                             };
 
-                            // For weapon magic slots, use a combo box instead of the generic editor.
-                            let is_magic_slot = def.type_ == 1 && (field.id == 14 || field.id == 15 || field.id == 16);
+                            // For weapon magic slots, use a popup window
+                            let is_magic_slot = def.type_ == 1
+                                && (field.id == 14 || field.id == 15 || field.id == 16);
 
                             if is_magic_slot {
                                 let current = match &field.value {
@@ -330,35 +403,31 @@ fn show_lootdef_editor(
                                     _ => String::new(),
                                 };
                                 let vanilla_val = vanilla
+                                    .as_ref()
                                     .and_then(|v| v.fields.iter().find(|vf| vf.id == field.id))
-                                    .map(|vf| match &vf.value { LootFieldValue::String(s) => s.clone(), _ => String::new() });
+                                    .map(|vf| match &vf.value {
+                                        LootFieldValue::String(s) => s.clone(),
+                                        _ => String::new(),
+                                    });
 
                                 let current_display = if current.is_empty() {
                                     "- None -".to_string()
                                 } else {
-                                    magic_items.iter()
+                                    magic_items
+                                        .iter()
                                         .find(|(n, _)| n == &current)
                                         .map(|(_, t)| format!("{} ({})", t, current))
                                         .unwrap_or_else(|| format!("? {}", current))
                                 };
 
+                                // Button that opens the popup
                                 ui.horizontal(|ui| {
                                     ui.label(label);
-                                    egui::ComboBox::from_id_salt(format!("magic_slot_{}_{}", def.name, field.id))
-                                        .selected_text(&current_display)
-                                        .width(260.0)
-                                        .show_ui(ui, |ui| {
-                                            if ui.selectable_label(current.is_empty(), "- None -").clicked() {
-                                                field.value = LootFieldValue::String(String::new());
-                                            }
-                                            for (name, title) in magic_items {
-                                                let entry_label = format!("{} ({})", title, name);
-                                                if ui.selectable_label(&current == name, &entry_label).clicked() {
-                                                    field.value = LootFieldValue::String(name.clone());
-                                                }
-                                            }
-                                        });
-                                    // Vanilla reset
+                                    if ui.button(&current_display).clicked() {
+                                        app.magic_item_picker_open = true;
+                                        app.magic_item_search.clear();
+                                        app.magic_item_picker_target_slot_id = Some(field.id);
+                                    }
                                     if let Some(van) = &vanilla_val {
                                         if van != &current && ui.button("↺").clicked() {
                                             field.value = LootFieldValue::String(van.clone());
@@ -368,7 +437,10 @@ fn show_lootdef_editor(
 
                                 // Magic damage override after each magic slot field
                                 let slot_id = field.id;
-                                let weapon_overrides = magic_slot_overrides.entry(weapon_name.clone()).or_default();
+                                let weapon_overrides = app
+                                    .magic_slot_overrides
+                                    .entry(weapon_name.clone())
+                                    .or_default();
                                 let slot_override = weapon_overrides.entry(slot_id).or_default();
 
                                 let dmg_label = match slot_id {
@@ -380,36 +452,46 @@ fn show_lootdef_editor(
 
                                 let changed = (slot_override.damage - 0.0f32).abs() > 0.001;
                                 let label_rich = if changed {
-                                    egui::RichText::new(format!("{}", dmg_label)).color(CHANGED_COLOR)
+                                    egui::RichText::new(dmg_label).color(CHANGED_COLOR)
                                 } else {
-                                    egui::RichText::new(format!("{}", dmg_label))
+                                    egui::RichText::new(dmg_label)
                                 };
 
                                 ui.horizontal(|ui| {
                                     ui.label(label_rich);
                                     ui.add(
                                         egui::DragValue::new(&mut slot_override.damage)
-                                            .speed(1.0)
-                                            .fixed_decimals(0)
+                                            .speed(app.config.drag_value_sensitivity),
                                     );
-                                    if changed {
-                                        if ui.button("↺").clicked() {
-                                            slot_override.damage = 0.0;
-                                        }
+                                    if changed && ui.button("↺").clicked() {
+                                        slot_override.damage = 0.0;
                                     }
                                 });
                             } else {
-                            ui.horizontal(|ui| {
-                                ui.label(label);
+                                ui.horizontal(|ui| {
+                                    ui.label(label);
                                     match &mut field.value {
-                                        LootFieldValue::Float(v)  => { ui.add(egui::DragValue::new(v).speed(0.1)); }
-                                        LootFieldValue::Int(v)    => { ui.add(egui::DragValue::new(v)); }
-                                        LootFieldValue::Bool(v)   => { ui.checkbox(v, ""); }
-                                        LootFieldValue::String(v) => { ui.text_edit_singleline(v); }
+                                        LootFieldValue::Float(v) => {
+                                            ui.add(
+                                                egui::DragValue::new(v)
+                                                    .speed(app.config.drag_value_sensitivity),
+                                            );
+                                        }
+                                        LootFieldValue::Int(v) => {
+                                            ui.add(egui::DragValue::new(v));
+                                        }
+                                        LootFieldValue::Bool(v) => {
+                                            ui.checkbox(v, "");
+                                        }
+                                        LootFieldValue::String(v) => {
+                                            ui.text_edit_singleline(v);
+                                        }
                                     }
                                     // Reset to vanilla
-                                    if let Some(vanilla_def) = vanilla {
-                                        if let Some(vf) = vanilla_def.fields.iter().find(|vf| vf.id == field.id) {
+                                    if let Some(vanilla_def) = &vanilla {
+                                        if let Some(vf) =
+                                            vanilla_def.fields.iter().find(|vf| vf.id == field.id)
+                                        {
                                             if values_differ(&field.value, &vf.value)
                                                 && ui.button("↺").clicked()
                                             {
@@ -436,17 +518,84 @@ fn show_lootdef_editor(
                                 &mut def.flags,
                                 flag_count,
                                 def.type_,
-                                vanilla.map(|v| &v.flags),
+                                vanilla.as_ref().map(|v| &v.flags),
                                 loot_names::get_flag_name,
                             );
                         });
                 },
             );
         });
+
+    if app.magic_item_picker_open {
+        let target_slot_id = match app.magic_item_picker_target_slot_id {
+            Some(id) => id,
+            None => {
+                // Shouldn't happen, but close safely
+                app.magic_item_picker_open = false;
+                return;
+            }
+        };
+
+        egui::Window::new("Select Magic Item")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .show(ui.ctx(), |ui| {
+                ui.set_width(300.0);
+                ui.horizontal(|ui| {
+                    ui.label("🔍");
+                    ui.text_edit_singleline(&mut app.magic_item_search);
+                });
+                ui.separator();
+
+                let search_lower = app.magic_item_search.to_lowercase();
+                let filtered: Vec<_> = magic_items
+                    .iter()
+                    .filter(|(name, title)| {
+                        search_lower.is_empty()
+                            || name.to_lowercase().contains(&search_lower)
+                            || title.to_lowercase().contains(&search_lower)
+                    })
+                    .collect();
+
+                egui::ScrollArea::vertical()
+                    .max_height(400.0)
+                    .show(ui, |ui| {
+                        if filtered.is_empty() {
+                            ui.label("No magic items found.");
+                        }
+                        for (name, title) in filtered {
+                            let entry_label = format!("{} ({})", title, name);
+                            if ui.selectable_label(false, entry_label).clicked() {
+                                // Update the correct magic slot field
+                                if let Some(def) = app
+                                    .working_catalog
+                                    .as_mut()
+                                    .and_then(|c| c.loot_defs.get_mut(app.selected_item_idx?))
+                                {
+                                    if let Some(field) =
+                                        def.fields.iter_mut().find(|f| f.id == target_slot_id)
+                                    {
+                                        field.value = LootFieldValue::String(name.clone());
+                                    }
+                                }
+                                app.magic_item_picker_open = false;
+                                app.magic_item_picker_target_slot_id = None;
+                            }
+                        }
+                    });
+
+                ui.separator();
+                if ui.button("Cancel").clicked() {
+                    app.magic_item_picker_open = false;
+                    app.magic_item_picker_target_slot_id = None;
+                }
+            });
+    }
 }
 
 /// Render the full flag list as checkboxes, one per defined flag index.
-/// 'get_name_fn' maps (type_, flag_idx) → &str.
+/// 'get_name_fn' maps (type_, flag_idx) -> &str.
 fn show_flag_checkboxes(
     ui: &mut Ui,
     flags: &mut Vec<i32>,
@@ -491,29 +640,12 @@ fn show_flag_checkboxes(
     }
 }
 
-/// Helper to draw a labeled horizontal row with change-tracking color.
-fn field_row(
-    ui: &mut Ui,
-    label: &str,
-    changed: bool,
-    content: impl FnOnce(&mut Ui),
-) {
-    ui.horizontal(|ui| {
-        if changed {
-            ui.colored_label(CHANGED_COLOR, label);
-        } else {
-            ui.label(label);
-        }
-        content(ui);
-    });
-}
-
 fn values_differ(a: &LootFieldValue, b: &LootFieldValue) -> bool {
     match (a, b) {
         (LootFieldValue::Float(x), LootFieldValue::Float(y)) => (x - y).abs() > 0.001,
-        (LootFieldValue::Int(x),   LootFieldValue::Int(y))   => x != y,
-        (LootFieldValue::Bool(x),  LootFieldValue::Bool(y))  => x != y,
-        (LootFieldValue::String(x),LootFieldValue::String(y))=> x != y,
+        (LootFieldValue::Int(x), LootFieldValue::Int(y)) => x != y,
+        (LootFieldValue::Bool(x), LootFieldValue::Bool(y)) => x != y,
+        (LootFieldValue::String(x), LootFieldValue::String(y)) => x != y,
         _ => true,
     }
 }

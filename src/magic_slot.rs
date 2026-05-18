@@ -4,10 +4,14 @@ pub struct MagicSlotOverrides {
     pub damage: f32,
 }
 
-fn default_damage() -> f32 { 0.0 }
+fn default_damage() -> f32 {
+    0.0
+}
 
 impl Default for MagicSlotOverrides {
     fn default() -> Self {
-        Self { damage: default_damage() }
+        Self {
+            damage: default_damage(),
+        }
     }
 }

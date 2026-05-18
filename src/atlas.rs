@@ -1,4 +1,6 @@
 use egui::{pos2, Rect, TextureHandle};
+use image::RgbaImage;
+use sas2_parser::char_def::CharDef;
 use sas2_parser::loot_catalog::LootDef;
 use sas2_parser::subflags::SubFlagDefCatalog;
 use sas2_parser::xnb_loader::load_texture_from_path;
@@ -7,8 +9,6 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
-use image::RgbaImage;
-use sas2_parser::char_def::CharDef;
 
 /// The item icon atlas loaded from items.xnb.
 /// Icons are arranged in a 32-wide grid of 128×128 tiles.
@@ -91,7 +91,7 @@ impl MonsterTextureCache {
         // Load sprite-cell metadata so assemble_monster_sprite can use the real
         // srcRect / origin for each tile rather than assuming a 128×128 grid.
         let flagdefs_path = game_path.join("Content").join("gfx").join("flagdefs.zfd");
-        let master_path   = game_path.join("Content").join("gfx").join("master.zcm");
+        let master_path = game_path.join("Content").join("gfx").join("master.zcm");
 
         match SubFlagDefCatalog::load_from_path(&flagdefs_path) {
             Err(e) => eprintln!("[atlas] Failed to load flagdefs.zfd: {}", e),
@@ -132,7 +132,7 @@ impl MonsterTextureCache {
                 if let Ok(img) = load_texture_from_path(path.to_str().unwrap()) {
                     let width = img.width();
                     let height = img.height();
-                    let data = img.into_vec();  // consumes img
+                    let data = img.into_vec(); // consumes img
                     // Send to UI thread via channel
                     if tx.send((name, data, width, height)).is_err() {
                         break;
@@ -149,15 +149,20 @@ impl MonsterTextureCache {
         let mut processed = 0;
         if let Some(rx) = &self.pending_receiver {
             loop {
-                if processed >= MAX_UPLOADS_PER_FRAME { break; }
+                if processed >= MAX_UPLOADS_PER_FRAME {
+                    break;
+                }
                 match rx.try_recv() {
                     Ok((name, data, w, h)) => {
                         processed += 1;
                         let ci = egui::ColorImage::from_rgba_unmultiplied(
-                            [w as usize, h as usize], &data,
+                            [w as usize, h as usize],
+                            &data,
                         );
                         let tex = ctx.load_texture(
-                            format!("monster_tex_{}", name), ci, Default::default(),
+                            format!("monster_tex_{}", name),
+                            ci,
+                            Default::default(),
                         );
                         self.textures.insert(name, tex);
                         self.loaded_textures += 1;
@@ -195,7 +200,8 @@ impl MonsterTextureCache {
             return Some(tex.clone());
         }
 
-        let tex_meta = self.xtexture_meta
+        let tex_meta = self
+            .xtexture_meta
             .as_ref()
             .and_then(|m| m.get(texture_name));
 
@@ -279,9 +285,7 @@ pub fn assemble_monster_sprite(
         .join("gfx")
         .join(format!("{}.xnb", texture_name));
 
-    let sheet = match load_texture_from_path(
-        tex_path.to_str().unwrap_or(""),
-    ) {
+    let sheet = match load_texture_from_path(tex_path.to_str().unwrap_or("")) {
         Ok(img) => img,
         Err(e) => {
             eprintln!("[assemble] Failed to load texture {}: {}", texture_name, e);
@@ -334,20 +338,20 @@ pub fn assemble_monster_sprite(
     let mut parts: Vec<PartInfo> = Vec::new();
 
     for (i, part) in frame.parts.iter().enumerate() {
-        if part.idx < 0 || part.idx >= BODY_MAX { continue; }
+        if part.idx < 0 || part.idx >= BODY_MAX {
+            continue;
+        }
         let idx = part.idx as usize;
 
         let (src_x, src_y, src_w, src_h, anchor_x, anchor_y) = match tex_meta {
-            Some(meta) => {
-                match meta.cells.get(idx).and_then(|c| c.as_ref()) {
-                    Some(cell) => {
-                        let (sx, sy, sw, sh) = cell.src_rect;
-                        let (ox, oy) = cell.origin;
-                        (sx, sy, sw, sh, ox - sx as f32, oy - sy as f32)
-                    }
-                    None => continue,
+            Some(meta) => match meta.cells.get(idx).and_then(|c| c.as_ref()) {
+                Some(cell) => {
+                    let (sx, sy, sw, sh) = cell.src_rect;
+                    let (ox, oy) = cell.origin;
+                    (sx, sy, sw, sh, ox - sx as f32, oy - sy as f32)
                 }
-            }
+                None => continue,
+            },
             None => {
                 let sx = (part.idx % fallback_cols) * 128;
                 let sy = (part.idx / fallback_cols) * 128;
@@ -355,16 +359,24 @@ pub fn assemble_monster_sprite(
             }
         };
 
-        if src_x >= sheet_w || src_y >= sheet_h || src_w <= 0 || src_h <= 0 { continue; }
+        if src_x >= sheet_w || src_y >= sheet_h || src_w <= 0 || src_h <= 0 {
+            continue;
+        }
 
         let (cx, cy, rot) = transforms[i].unwrap();
 
         // Game natively authors facing right (face = 1). We do not negate cy here,
         // as XNA transforms are intrinsically Y-Down in the engine.
         parts.push(PartInfo {
-            src_x, src_y, src_w, src_h,
-            anchor_x, anchor_y,
-            cx, cy, rot,
+            src_x,
+            src_y,
+            src_w,
+            src_h,
+            anchor_x,
+            anchor_y,
+            cx,
+            cy,
+            rot,
             scale_x: part.scaling.0,
             scale_y: part.scaling.1,
             flip: part.flip,
@@ -372,7 +384,10 @@ pub fn assemble_monster_sprite(
     }
 
     if parts.is_empty() {
-        eprintln!("[assemble] No drawable parts for {}/{}", def_name, texture_name);
+        eprintln!(
+            "[assemble] No drawable parts for {}/{}",
+            def_name, texture_name
+        );
         return None;
     }
 
@@ -383,14 +398,12 @@ pub fn assemble_monster_sprite(
     let mut max_y = f32::MIN;
 
     for p in &parts {
-        let left   = -p.anchor_x * p.scale_x;
-        let right  = (p.src_w as f32 - p.anchor_x) * p.scale_x;
-        let top    = -p.anchor_y * p.scale_y;
+        let left = -p.anchor_x * p.scale_x;
+        let right = (p.src_w as f32 - p.anchor_x) * p.scale_x;
+        let top = -p.anchor_y * p.scale_y;
         let bottom = (p.src_h as f32 - p.anchor_y) * p.scale_y;
 
-        let corners = [
-            (left, top), (right, top), (right, bottom), (left, bottom),
-        ];
+        let corners = [(left, top), (right, top), (right, bottom), (left, bottom)];
 
         for (dx, dy) in corners {
             let rx = dx * p.rot.cos() - dy * p.rot.sin();
@@ -413,16 +426,16 @@ pub fn assemble_monster_sprite(
     let mut canvas = RgbaImage::new(canvas_w, canvas_h);
 
     for p in &parts {
-        if p.scale_x.abs() < 0.001 || p.scale_y.abs() < 0.001 { continue; }
+        if p.scale_x.abs() < 0.001 || p.scale_y.abs() < 0.001 {
+            continue;
+        }
 
-        let left   = -p.anchor_x * p.scale_x;
-        let right  = (p.src_w as f32 - p.anchor_x) * p.scale_x;
-        let top    = -p.anchor_y * p.scale_y;
+        let left = -p.anchor_x * p.scale_x;
+        let right = (p.src_w as f32 - p.anchor_x) * p.scale_x;
+        let top = -p.anchor_y * p.scale_y;
         let bottom = (p.src_h as f32 - p.anchor_y) * p.scale_y;
 
-        let corners = [
-            (left, top), (right, top), (right, bottom), (left, bottom),
-        ];
+        let corners = [(left, top), (right, top), (right, bottom), (left, bottom)];
 
         let mut pmin_x = f32::MAX;
         let mut pmin_y = f32::MAX;
@@ -466,9 +479,11 @@ pub fn assemble_monster_sprite(
                     sx = -sx;
                 }
 
-                if sx >= -p.anchor_x && sx < (p.src_w as f32 - p.anchor_x) &&
-                    sy >= -p.anchor_y && sy < (p.src_h as f32 - p.anchor_y) {
-
+                if sx >= -p.anchor_x
+                    && sx < (p.src_w as f32 - p.anchor_x)
+                    && sy >= -p.anchor_y
+                    && sy < (p.src_h as f32 - p.anchor_y)
+                {
                     let tx = (sx + p.anchor_x).floor() as i32;
                     let ty = (sy + p.anchor_y).floor() as i32;
 
@@ -484,9 +499,15 @@ pub fn assemble_monster_sprite(
                             let bg_a = bg[3] as f32 / 255.0;
                             let out_a = alpha + bg_a * (1.0 - alpha);
                             if out_a > 0.0 {
-                                bg[0] = ((pixel[0] as f32 * alpha + bg[0] as f32 * bg_a * (1.0 - alpha)) / out_a) as u8;
-                                bg[1] = ((pixel[1] as f32 * alpha + bg[1] as f32 * bg_a * (1.0 - alpha)) / out_a) as u8;
-                                bg[2] = ((pixel[2] as f32 * alpha + bg[2] as f32 * bg_a * (1.0 - alpha)) / out_a) as u8;
+                                bg[0] = ((pixel[0] as f32 * alpha
+                                    + bg[0] as f32 * bg_a * (1.0 - alpha))
+                                    / out_a) as u8;
+                                bg[1] = ((pixel[1] as f32 * alpha
+                                    + bg[1] as f32 * bg_a * (1.0 - alpha))
+                                    / out_a) as u8;
+                                bg[2] = ((pixel[2] as f32 * alpha
+                                    + bg[2] as f32 * bg_a * (1.0 - alpha))
+                                    / out_a) as u8;
                                 bg[3] = (out_a * 255.0) as u8;
                             }
                             canvas.put_pixel(dx, dy, bg);
