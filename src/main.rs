@@ -1,10 +1,14 @@
+mod anim_editor;
 mod app;
+pub mod assets;
 pub mod atlas;
+mod image_editor;
 mod catalog;
 mod config;
 pub mod magic_slot;
 mod preset;
 pub mod tabs;
+pub mod texture_editor;
 
 use crate::app::ResalinatedApp;
 #[cfg(not(debug_assertions))]

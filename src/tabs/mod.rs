@@ -1,7 +1,10 @@
+pub mod animations;
+pub mod images;
 pub mod items;
 pub mod manager;
 pub mod monsters;
 pub mod preset_info;
+pub mod textures;
 pub mod utils;
 
 #[derive(PartialEq)]
@@ -10,4 +13,7 @@ pub enum Tab {
     Items,
     Manager,
     Monsters,
+    Textures,
+    Animations,
+    Images,
 }

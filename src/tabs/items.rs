@@ -3,20 +3,35 @@ use crate::atlas::ItemAtlas;
 use crate::tabs::utils::{field_row, CHANGED_COLOR};
 use eframe::egui;
 use egui::{Response, Ui};
-use sas2_parser::loot_catalog::{LootDef, LootFieldValue};
+use sas2_parser::loot_catalog::{LootCatalog, LootDef, LootField, LootFieldValue};
 use sas2_parser::loot_names;
 use std::collections::HashMap;
 
-/// Draw one icon button from the atlas.
-/// If either the atlas or the def is missing (or the def has no icon), an invisible placeholder of the same size is rendered so the grid columns stay aligned.
+/// Draw one icon button. Vanilla icons come from the items atlas; an icon at or beyond the vanilla
+/// capacity is a custom icon drawn from the custom-icon atlas. A missing/empty icon renders an
+/// invisible placeholder so grid columns stay aligned.
 pub fn draw_image_button(
     ui: &mut Ui,
     atlas: Option<&ItemAtlas>,
     def: Option<&LootDef>,
     icon_size: f32,
+    image_editor: &crate::image_editor::ImageEditor,
 ) -> Response {
-    let uv = atlas.zip(def).and_then(|(a, d)| a.icon_uv(d));
+    // Custom icon?
+    if let Some(d) = def {
+        let cap = image_editor.capacity as i32;
+        if cap > 0 && d.img >= cap {
+            let local = d.img - cap;
+            if let Some((_, handle)) = image_editor.icons.iter().find(|(i, _)| *i == local) {
+                return ui.add(egui::Button::image(
+                    egui::Image::from_texture(handle)
+                        .fit_to_exact_size(egui::vec2(icon_size, icon_size)),
+                ));
+            }
+        }
+    }
 
+    let uv = atlas.zip(def).and_then(|(a, d)| a.icon_uv(d));
     if let (Some(uv), Some(atlas)) = (uv, atlas) {
         ui.add(egui::Button::image(
             egui::Image::from_texture(&atlas.texture)
@@ -45,6 +60,12 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
         ui.label("No catalog loaded.");
         return;
     }
+
+    // Load the custom-icon atlas info so the editor can offer vanilla vs custom icons.
+    if let Some(gp) = app.game_path.clone() {
+        app.image_editor.ensure_loaded(ui.ctx(), &gp);
+    }
+    let icon_capacity = app.image_editor.capacity as i32;
 
     let full_width = ui.available_width();
     let min_size = 250.0;
@@ -78,6 +99,49 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
     // Sort by display text (second element)
     magic_items.sort_by(|a, b| a.1.cmp(&b.1));
 
+    // Candidates for "Copy logic from": (name, display, type, subtype) for every item, so the
+    // editor can offer same-type items to copy fields/flags from (e.g. give a new weapon the
+    // logic of an existing zweihander).
+    let copy_candidates: Vec<(String, String, i32, i32)> = app
+        .working_catalog
+        .as_ref()
+        .map(|c| {
+            c.loot_defs
+                .iter()
+                .map(|d| {
+                    let display = d
+                        .title
+                        .first()
+                        .filter(|t| !t.is_empty())
+                        .cloned()
+                        .unwrap_or_else(|| d.name.clone());
+                    (d.name.clone(), display, d.type_, d.sub_type)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Vanilla icon choices for the "Pick img" picker: distinct in-atlas img values with a
+    // representative item label (searchable by name or index).
+    let mut icon_choices: Vec<(i32, String)> = Vec::new();
+    {
+        let mut seen: std::collections::HashSet<i32> = std::collections::HashSet::new();
+        if let Some(c) = app.vanilla_catalog.as_ref() {
+            for d in &c.loot_defs {
+                if d.img >= 0 && d.img < icon_capacity && seen.insert(d.img) {
+                    let label = d
+                        .title
+                        .first()
+                        .filter(|t| !t.is_empty())
+                        .cloned()
+                        .unwrap_or_else(|| d.name.clone());
+                    icon_choices.push((d.img, label));
+                }
+            }
+        }
+        icon_choices.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
+    }
+
     // Right panel: item editor
     let right_panel = egui::Panel::right("item_details")
         .resizable(true)
@@ -87,7 +151,14 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
         .size_range(min_size..=full_width * 0.8)
         .show_inside(ui, |ui| {
             ui.set_min_width(ui.available_width());
-            show_lootdef_editor(app, ui, &magic_items);
+            show_lootdef_editor(
+                app,
+                ui,
+                &magic_items,
+                &copy_candidates,
+                icon_capacity,
+                &icon_choices,
+            );
         });
 
     let actual_width = right_panel.response.rect.width();
@@ -106,6 +177,60 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
             ui.text_edit_singleline(&mut app.search_filter);
         });
         ui.checkbox(&mut app.show_only_changed_items, "Show Only Changed Items");
+
+        // Create / clone items.
+        ui.horizontal(|ui| {
+            if ui.button("New Item").clicked() {
+                create_blank_item(app);
+            }
+            let has_sel = app.selected_item_idx.is_some();
+            if ui
+                .add_enabled(has_sel, egui::Button::new("Clone Selected"))
+                .on_hover_text("Duplicate the selected item under a new unique name")
+                .clicked()
+            {
+                clone_selected_item(app);
+            }
+
+            // Disable (reversible) / Enable / Delete. Vanilla items can only be disabled; a
+            // non-vanilla item must be disabled first, after which Delete (permanent) appears.
+            let sel = app.selected_item_idx.and_then(|idx| {
+                app.working_catalog
+                    .as_ref()
+                    .and_then(|c| c.loot_defs.get(idx))
+                    .map(|d| d.name.clone())
+            });
+            if let Some(name) = sel {
+                let is_vanilla = app
+                    .vanilla_catalog
+                    .as_ref()
+                    .map_or(false, |v| v.by_name.contains_key(&name));
+                let is_disabled = app.loot_disabled.contains(&name);
+                if is_disabled {
+                    if ui
+                        .button("Enable")
+                        .on_hover_text("Re-include this item in the game")
+                        .clicked()
+                    {
+                        app.loot_disabled.remove(&name);
+                    }
+                    if !is_vanilla
+                        && ui
+                            .button("Delete")
+                            .on_hover_text("Permanently remove this non-vanilla item")
+                            .clicked()
+                    {
+                        delete_selected_item(app);
+                    }
+                } else if ui
+                    .button("Disable")
+                    .on_hover_text("Exclude from the game but keep it (re-enableable)")
+                    .clicked()
+                {
+                    app.loot_disabled.insert(name);
+                }
+            }
+        });
         ui.add_space(4.0);
 
         let filter = app.search_filter.to_lowercase();
@@ -175,6 +300,7 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
                                     app.item_atlas.as_ref(),
                                     Some(def),
                                     app.config.item_icon_size,
+                                    &app.image_editor,
                                 );
                                 let btn_w = response.rect.width();
 
@@ -190,6 +316,13 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
                                     .cloned()
                                     .unwrap_or_else(|| def.name.clone());
                                 add_item_label(ui, &display_name, app.config.item_font_size);
+                                if app.loot_disabled.contains(&def.name) {
+                                    ui.label(
+                                        egui::RichText::new("(disabled)")
+                                            .small()
+                                            .color(egui::Color32::from_rgb(220, 120, 120)),
+                                    );
+                                }
                             });
                         }
                     });
@@ -200,8 +333,218 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
     });
 }
 
+/// Return a name not already used by any loot def (appends _1, _2, ... on collision).
+fn next_unique_name(catalog: &LootCatalog, base: &str) -> String {
+    let exists = |n: &str| catalog.loot_defs.iter().any(|d| d.name == n);
+    if !exists(base) {
+        return base.to_string();
+    }
+    let mut i = 1;
+    loop {
+        let candidate = format!("{}_{}", base, i);
+        if !exists(&candidate) {
+            return candidate;
+        }
+        i += 1;
+    }
+}
+
+/// Append a new loot def to the working catalog, keep the name index in sync, and select it.
+fn add_item(app: &mut ResalinatedApp, def: LootDef) {
+    if let Some(cat) = app.working_catalog.as_mut() {
+        let idx = cat.loot_defs.len();
+        cat.by_name.insert(def.name.clone(), idx);
+        cat.loot_defs.push(def);
+        app.selected_item_idx = Some(idx);
+        // Clear the filter so the newly added item is visible in the list.
+        app.search_filter.clear();
+        app.show_only_changed_items = false;
+    }
+}
+
+/// Create a blank item from scratch. Title/description must keep exactly 20 slots so the binary
+/// layout stays valid; fields/flags start empty and are filled in by the editor afterwards.
+fn create_blank_item(app: &mut ResalinatedApp) {
+    let name = app
+        .working_catalog
+        .as_ref()
+        .map(|c| next_unique_name(c, "new_item"))
+        .unwrap_or_else(|| "new_item".to_string());
+
+    let mut def = LootDef {
+        id: 0,
+        name,
+        title: vec![String::new(); 20],
+        description: vec![String::new(); 20],
+        type_: 0,
+        sub_type: 0,
+        cost: 0.0,
+        img: -1,
+        alt_img: -1,
+        texture: String::new(),
+        fields: Vec::new(),
+        flags: Vec::new(),
+        token_loot: String::new(),
+        token_cost: 0,
+    };
+    if app.config.auto_type_fields {
+        def.fields = type_field_template(app.vanilla_catalog.as_ref(), def.type_);
+    }
+    add_item(app, def);
+}
+
+/// Remove the selected item from the working catalog and reindex. Vanilla items removed here are
+/// recorded as deletions when the preset is saved, so they also drop out of the applied catalog.
+fn delete_selected_item(app: &mut ResalinatedApp) {
+    let Some(idx) = app.selected_item_idx else {
+        return;
+    };
+    let removed_name = app
+        .working_catalog
+        .as_ref()
+        .and_then(|c| c.loot_defs.get(idx))
+        .map(|d| d.name.clone());
+    if let Some(cat) = app.working_catalog.as_mut() {
+        if idx >= cat.loot_defs.len() {
+            return;
+        }
+        cat.loot_defs.remove(idx);
+        cat.by_name.clear();
+        for (i, d) in cat.loot_defs.iter().enumerate() {
+            cat.by_name.insert(d.name.clone(), i);
+        }
+        cat.black_starstone_index = cat.loot_defs.iter().position(|d| d.name == "black_pearl");
+        cat.gray_starstone_index = cat.loot_defs.iter().position(|d| d.name == "gray_pearl");
+    }
+    if let Some(name) = removed_name {
+        app.loot_disabled.remove(&name);
+        app.shop_additions.remove(&name);
+        app.craft_additions.remove(&name);
+    }
+    app.selected_item_idx = None;
+}
+
+/// Clone the selected item under a new unique "<name>_copy" name (full structure preserved).
+fn clone_selected_item(app: &mut ResalinatedApp) {
+    let Some(idx) = app.selected_item_idx else {
+        return;
+    };
+
+    // Clone the source and compute a fresh name while only borrowing the catalog immutably.
+    let new_def = {
+        let Some(cat) = app.working_catalog.as_ref() else {
+            return;
+        };
+        let Some(src) = cat.loot_defs.get(idx) else {
+            return;
+        };
+        let mut def = src.clone();
+        def.name = next_unique_name(cat, &format!("{}_copy", src.name));
+        def
+    };
+    add_item(app, new_def);
+}
+
+/// One multiplier row (1.0 = vanilla) for magic cost/cooldown, colored when non-default, with a
+/// reset-to-1.0 button.
+fn magic_mul_row(ui: &mut Ui, label: &str, value: &mut f32, speed: f32) {
+    let changed = (*value - 1.0).abs() > 0.001;
+    let label_rich = if changed {
+        egui::RichText::new(label).color(CHANGED_COLOR)
+    } else {
+        egui::RichText::new(label)
+    };
+    ui.horizontal(|ui| {
+        ui.label(label_rich);
+        ui.add(egui::DragValue::new(value).speed(speed).range(0.0..=100.0))
+            .on_hover_text("Multiplier vs vanilla: 1.0 = unchanged, 0.5 = half, 2.0 = double. (0 is treated as unchanged; use a small value like 0.01 for near-free.)");
+        if changed && ui.button("↺").clicked() {
+            *value = 1.0;
+        }
+    });
+}
+
+/// A default (zeroed) value of the same variant.
+fn default_field_value(v: &LootFieldValue) -> LootFieldValue {
+    match v {
+        LootFieldValue::Float(_) => LootFieldValue::Float(0.0),
+        LootFieldValue::Int(_) => LootFieldValue::Int(0),
+        LootFieldValue::Bool(_) => LootFieldValue::Bool(false),
+        LootFieldValue::String(_) => LootFieldValue::String(String::new()),
+    }
+}
+
+/// The canonical field set for a loot type, taken from the vanilla item of that type with the most
+/// fields. Values are reset to defaults; ids and data types are preserved.
+fn type_field_template(vanilla: Option<&LootCatalog>, type_: i32) -> Vec<LootField> {
+    let Some(v) = vanilla else {
+        return Vec::new();
+    };
+    v.loot_defs
+        .iter()
+        .filter(|d| d.type_ == type_)
+        .max_by_key(|d| d.fields.len())
+        .map(|t| {
+            t.fields
+                .iter()
+                .map(|f| LootField {
+                    id: f.id,
+                    data_type: f.data_type,
+                    value: default_field_value(&f.value),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Replace `def.fields` with the type template, preserving values of fields that already exist
+/// (matched by id and value variant).
+fn apply_type_template(def: &mut LootDef, template: Vec<LootField>) {
+    if template.is_empty() {
+        return;
+    }
+    let old = std::mem::take(&mut def.fields);
+    def.fields = template
+        .into_iter()
+        .map(|mut tf| {
+            if let Some(of) = old.iter().find(|o| {
+                o.id == tf.id
+                    && std::mem::discriminant(&o.value) == std::mem::discriminant(&tf.value)
+            }) {
+                tf.value = of.value.clone();
+            }
+            tf
+        })
+        .collect();
+}
+
+/// Replace the item at `idx`'s fields and flags with those of `src_name` (its "logic").
+fn apply_copy_logic(app: &mut ResalinatedApp, idx: usize, src_name: &str) {
+    let src = app
+        .working_catalog
+        .as_ref()
+        .and_then(|c| c.loot_defs.iter().find(|d| d.name == src_name))
+        .map(|d| (d.fields.clone(), d.flags.clone()));
+    if let Some((fields, flags)) = src {
+        if let Some(cat) = app.working_catalog.as_mut() {
+            if let Some(def) = cat.loot_defs.get_mut(idx) {
+                def.fields = fields;
+                def.flags = flags;
+            }
+        }
+    }
+}
+
 /// 'magic_items': (internal_name, display_title) pairs for all magic-type items in the catalog.
-fn show_lootdef_editor(app: &mut ResalinatedApp, ui: &mut Ui, magic_items: &[(String, String)]) {
+/// 'copy_candidates': (name, display, type, subtype) for "Copy logic from".
+fn show_lootdef_editor(
+    app: &mut ResalinatedApp,
+    ui: &mut Ui,
+    magic_items: &[(String, String)],
+    copy_candidates: &[(String, String, i32, i32)],
+    icon_capacity: i32,
+    icon_choices: &[(i32, String)],
+) {
     // Get the selected item index
     let Some(idx) = app.selected_item_idx else {
         ui.label("Select an item to edit.");
@@ -230,6 +573,11 @@ fn show_lootdef_editor(app: &mut ResalinatedApp, ui: &mut Ui, magic_items: &[(St
         .as_ref()
         .and_then(|vc| vc.by_name.get(&def.name).map(|&i| &vc.loot_defs[i]))
         .cloned();
+
+    // The type of the selected item, used by the copy-logic picker (rendered after the editor).
+    let selected_type = def.type_;
+    let selected_sub = def.sub_type;
+    let selected_name = def.name.clone();
 
     egui::ScrollArea::vertical()
         .auto_shrink([false; 2])
@@ -293,13 +641,122 @@ fn show_lootdef_editor(app: &mut ResalinatedApp, ui: &mut Ui, magic_items: &[(St
                 },
             );
 
-            ui.label(format!(
-                "Type: {} ({}) | Subtype: {} ({})",
-                def.type_,
-                loot_names::get_type_name(def.type_),
-                def.sub_type,
-                loot_names::get_subtype_name(def.type_, def.sub_type)
-            ));
+            // Type (editable dropdown) and subtype.
+            let type_before = def.type_;
+            field_row(
+                ui,
+                "Type:",
+                vanilla
+                    .as_ref()
+                    .map(|v| def.type_ != v.type_)
+                    .unwrap_or(true),
+                |ui| {
+                    egui::ComboBox::from_id_salt("item_type")
+                        .selected_text(format!(
+                            "{} ({})",
+                            def.type_,
+                            loot_names::get_type_name(def.type_)
+                        ))
+                        .show_ui(ui, |ui| {
+                            for t in 0..=8 {
+                                ui.selectable_value(
+                                    &mut def.type_,
+                                    t,
+                                    format!("{} {}", t, loot_names::get_type_name(t)),
+                                );
+                            }
+                        });
+                    if let Some(v) = &vanilla {
+                        if def.type_ != v.type_ && ui.button("↺").clicked() {
+                            def.type_ = v.type_;
+                        }
+                    }
+                },
+            );
+            // When the type changes and auto-fill is on, adopt that type's field set.
+            if def.type_ != type_before && app.config.auto_type_fields {
+                let template = type_field_template(app.vanilla_catalog.as_ref(), def.type_);
+                apply_type_template(def, template);
+            }
+            field_row(
+                ui,
+                "Subtype:",
+                vanilla
+                    .as_ref()
+                    .map(|v| def.sub_type != v.sub_type)
+                    .unwrap_or(true),
+                |ui| {
+                    ui.add(egui::DragValue::new(&mut def.sub_type));
+                    ui.label(loot_names::get_subtype_name(def.type_, def.sub_type));
+                    if let Some(v) = &vanilla {
+                        if def.sub_type != v.sub_type && ui.button("↺").clicked() {
+                            def.sub_type = v.sub_type;
+                        }
+                    }
+                },
+            );
+
+            // Shops: make this item buyable. New items have no in-game source otherwise; this is
+            // how a created/cloned item becomes obtainable. Shops are NPC-dialog driven and can't
+            // be enumerated, so the entry is added to every merchant (optionally flag-gated).
+            ui.collapsing("Shops", |ui| {
+                let name = def.name.clone();
+                let mut sell = app.shop_additions.contains_key(&name);
+                if ui
+                    .checkbox(&mut sell, "Sell in shops (all merchants)")
+                    .changed()
+                {
+                    if sell {
+                        app.shop_additions.entry(name.clone()).or_default();
+                    } else {
+                        app.shop_additions.remove(&name);
+                    }
+                }
+                if let Some(flag) = app.shop_additions.get_mut(&name) {
+                    ui.horizontal(|ui| {
+                        ui.label("Require flag (optional):");
+                        ui.text_edit_singleline(flag);
+                    });
+                    ui.label(
+                        egui::RichText::new(
+                            "Empty flag = always for sale. Applies after Apply Changes.",
+                        )
+                        .small()
+                        .weak(),
+                    );
+                }
+            });
+
+            // Craft / equipment menu: independent of Shops. Adds this item to crafting menus.
+            ui.collapsing("Craft / Equipment menu", |ui| {
+                let name = def.name.clone();
+                let mut craftable = app.craft_additions.contains_key(&name);
+                if ui
+                    .checkbox(&mut craftable, "Add to craft / equipment menu")
+                    .changed()
+                {
+                    if craftable {
+                        app.craft_additions.entry(name.clone()).or_default();
+                    } else {
+                        app.craft_additions.remove(&name);
+                    }
+                }
+                if let Some(material) = app.craft_additions.get_mut(&name) {
+                    ui.horizontal(|ui| {
+                        ui.label("Craft material (optional):");
+                        ui.text_edit_singleline(material);
+                    });
+                    ui.label(
+                        egui::RichText::new(
+                            "If the item already has a recipe it appears as-is. Otherwise set a \
+                             material (an item's internal name) to craft it from. Applies after \
+                             Apply Changes.",
+                        )
+                        .small()
+                        .weak(),
+                    );
+                }
+            });
 
             field_row(
                 ui,
@@ -327,6 +784,29 @@ fn show_lootdef_editor(app: &mut ResalinatedApp, ui: &mut Ui, magic_items: &[(St
                 vanilla.as_ref().map(|v| def.img != v.img).unwrap_or(true),
                 |ui| {
                     ui.add(egui::DragValue::new(&mut def.img));
+                    // Indicate whether this is a vanilla or custom-atlas icon.
+                    if icon_capacity > 0 && def.img >= icon_capacity {
+                        ui.label(
+                            egui::RichText::new(format!("custom #{}", def.img - icon_capacity))
+                                .color(egui::Color32::LIGHT_GREEN),
+                        );
+                    }
+                    if ui
+                        .button("Pick img")
+                        .on_hover_text("Choose a vanilla game icon (searchable)")
+                        .clicked()
+                    {
+                        app.vanilla_icon_picker_open = true;
+                        app.vanilla_icon_search.clear();
+                    }
+                    if ui
+                        .button("Pick custom img")
+                        .on_hover_text("Choose a custom icon (searchable)")
+                        .clicked()
+                    {
+                        app.custom_icon_picker_open = true;
+                        app.custom_icon_search.clear();
+                    }
                     if let Some(v) = &vanilla {
                         if def.img != v.img && ui.button("↺").clicked() {
                             def.img = v.img;
@@ -373,12 +853,25 @@ fn show_lootdef_editor(app: &mut ResalinatedApp, ui: &mut Ui, magic_items: &[(St
 
             // Numeric / String Fields
             ui.collapsing(format!("Fields ({})", def.fields.len()), |ui| {
+                // Copy logic (fields + flags) from another item, to give a new item working logic.
+                if ui
+                    .button("Copy logic from...")
+                    .on_hover_text(
+                        "Replace this item's fields and flags with another item's (its logic)",
+                    )
+                    .clicked()
+                {
+                    app.copy_picker_open = true;
+                    app.copy_picker_search.clear();
+                }
+
+                let mut remove_field: Option<usize> = None;
                 egui::ScrollArea::vertical()
                     .max_height(320.0)
                     .show(ui, |ui| {
                         let weapon_name = def.name.clone();
 
-                        for field in def.fields.iter_mut() {
+                        for (field_index, field) in def.fields.iter_mut().enumerate() {
                             let field_name = loot_names::get_field_name(def.type_, field.id);
                             let changed = vanilla
                                 .as_ref()
@@ -444,10 +937,10 @@ fn show_lootdef_editor(app: &mut ResalinatedApp, ui: &mut Ui, magic_items: &[(St
                                 let slot_override = weapon_overrides.entry(slot_id).or_default();
 
                                 let dmg_label = match slot_id {
-                                    14 => "Magic [X] Damage:",
-                                    15 => "Magic [Y] Damage:",
-                                    16 => "Magic [B] Damage:",
-                                    _ => "Magic Damage:",
+                                    14 => "Magic [X] Damage Multiplier:",
+                                    15 => "Magic [Y] Damage Multiplier:",
+                                    16 => "Magic [B] Damage Multiplier:",
+                                    _ => "Magic Damage Multiplier:",
                                 };
 
                                 let changed = (slot_override.damage - 0.0f32).abs() > 0.001;
@@ -467,6 +960,26 @@ fn show_lootdef_editor(app: &mut ResalinatedApp, ui: &mut Ui, magic_items: &[(St
                                         slot_override.damage = 0.0;
                                     }
                                 });
+
+                                // Cost (MP/Rage) and cooldown multipliers for the same slot.
+                                let slot_letter = match slot_id {
+                                    14 => "X",
+                                    15 => "Y",
+                                    16 => "B",
+                                    _ => "?",
+                                };
+                                magic_mul_row(
+                                    ui,
+                                    &format!("Magic [{}] Cost Multiplier:", slot_letter),
+                                    &mut slot_override.cost,
+                                    app.config.drag_value_sensitivity,
+                                );
+                                magic_mul_row(
+                                    ui,
+                                    &format!("Magic [{}] Cooldown Multiplier:", slot_letter),
+                                    &mut slot_override.cooldown,
+                                    app.config.drag_value_sensitivity,
+                                );
                             } else {
                                 ui.horizontal(|ui| {
                                     ui.label(label);
@@ -499,10 +1012,23 @@ fn show_lootdef_editor(app: &mut ResalinatedApp, ui: &mut Ui, magic_items: &[(St
                                             }
                                         }
                                     }
+                                    if ui
+                                        .small_button("x")
+                                        .on_hover_text("Remove this field")
+                                        .clicked()
+                                    {
+                                        remove_field = Some(field_index);
+                                    }
                                 });
                             }
                         }
                     });
+
+                if let Some(i) = remove_field {
+                    if i < def.fields.len() {
+                        def.fields.remove(i);
+                    }
+                }
             });
 
             // Flags
@@ -525,6 +1051,197 @@ fn show_lootdef_editor(app: &mut ResalinatedApp, ui: &mut Ui, magic_items: &[(St
                 },
             );
         });
+
+    // "Copy logic from" picker: a searchable popup of same-type items (def borrow released here).
+    if app.copy_picker_open {
+        let mut chosen: Option<String> = None;
+        let mut open = app.copy_picker_open;
+        egui::Window::new("Copy logic from")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .open(&mut open)
+            .show(ui.ctx(), |ui| {
+                ui.set_width(320.0);
+                ui.label(format!(
+                    "Items of type {} ({})",
+                    selected_type,
+                    loot_names::get_type_name(selected_type)
+                ));
+                ui.horizontal(|ui| {
+                    ui.label("🔍");
+                    ui.text_edit_singleline(&mut app.copy_picker_search);
+                });
+                ui.separator();
+
+                let needle = app.copy_picker_search.to_lowercase();
+                let mut matches: Vec<&(String, String, i32, i32)> = copy_candidates
+                    .iter()
+                    .filter(|(n, disp, t, _)| {
+                        *t == selected_type
+                            && n != &selected_name
+                            && (needle.is_empty()
+                                || n.to_lowercase().contains(&needle)
+                                || disp.to_lowercase().contains(&needle))
+                    })
+                    .collect();
+                // Same subtype first for relevance.
+                matches.sort_by_key(|(_, _, _, st)| (*st != selected_sub) as i32);
+
+                egui::ScrollArea::vertical()
+                    .max_height(400.0)
+                    .show(ui, |ui| {
+                        for (n, disp, _, st) in matches {
+                            let label = if *st == selected_sub {
+                                format!("{} ({})", disp, n)
+                            } else {
+                                format!("{} ({}) [sub {}]", disp, n, st)
+                            };
+                            if ui.selectable_label(false, label).clicked() {
+                                chosen = Some(n.clone());
+                            }
+                        }
+                    });
+            });
+        app.copy_picker_open = open;
+        if let Some(src_name) = chosen {
+            apply_copy_logic(app, idx, &src_name);
+            app.copy_picker_open = false;
+        }
+    }
+
+    // Vanilla icon picker: searchable grid of the game's item icons.
+    if app.vanilla_icon_picker_open {
+        let mut open = app.vanilla_icon_picker_open;
+        let mut chosen_img: Option<i32> = None;
+        egui::Window::new("Pick game icon")
+            .collapsible(false)
+            .resizable(true)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .open(&mut open)
+            .show(ui.ctx(), |ui| {
+                ui.set_width(440.0);
+                ui.horizontal(|ui| {
+                    ui.label("🔍");
+                    ui.text_edit_singleline(&mut app.vanilla_icon_search);
+                });
+                ui.separator();
+                let needle = app.vanilla_icon_search.to_lowercase();
+                let atlas = app.item_atlas.as_ref();
+                egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
+                    egui::Grid::new("vanilla_icon_pick")
+                        .spacing([8.0, 8.0])
+                        .show(ui, |ui| {
+                            let mut col = 0;
+                            for (img, label) in icon_choices.iter().filter(|(img, label)| {
+                                needle.is_empty()
+                                    || label.to_lowercase().contains(&needle)
+                                    || img.to_string().contains(&needle)
+                            }) {
+                                ui.vertical(|ui| {
+                                    let uv = atlas.and_then(|a| a.icon_uv_for_img(*img));
+                                    let clicked = if let (Some(a), Some(uv)) = (atlas, uv) {
+                                        ui.add(egui::Button::image(
+                                            egui::Image::from_texture(&a.texture)
+                                                .fit_to_exact_size(egui::vec2(64.0, 64.0))
+                                                .uv(uv),
+                                        ))
+                                        .on_hover_text(format!("{} (img {})", label, img))
+                                        .clicked()
+                                    } else {
+                                        ui.button(format!("img {}", img)).clicked()
+                                    };
+                                    if clicked {
+                                        chosen_img = Some(*img);
+                                    }
+                                    add_item_label(ui, label, 10.0);
+                                });
+                                col += 1;
+                                if col % 5 == 0 {
+                                    ui.end_row();
+                                }
+                            }
+                        });
+                });
+            });
+        app.vanilla_icon_picker_open = open;
+        if let Some(img) = chosen_img {
+            if let Some(cat) = app.working_catalog.as_mut() {
+                if let Some(def) = cat.loot_defs.get_mut(idx) {
+                    def.img = img;
+                }
+            }
+            app.vanilla_icon_picker_open = false;
+        }
+    }
+
+    // Custom-icon picker: searchable grid of custom icons; choosing sets img = capacity + local.
+    if app.custom_icon_picker_open {
+        let mut open = app.custom_icon_picker_open;
+        let mut chosen_img: Option<i32> = None;
+        egui::Window::new("Pick custom icon")
+            .collapsible(false)
+            .resizable(true)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .open(&mut open)
+            .show(ui.ctx(), |ui| {
+                ui.set_width(360.0);
+                ui.horizontal(|ui| {
+                    ui.label("🔍");
+                    ui.text_edit_singleline(&mut app.custom_icon_search);
+                });
+                ui.label(
+                    egui::RichText::new("Search by the Img value. Custom icons are managed in the Images tab.")
+                        .small()
+                        .weak(),
+                );
+                ui.separator();
+                if app.image_editor.icons.is_empty() {
+                    ui.label("No custom icons yet. Add some in the Images tab.");
+                } else {
+                    let needle = app.custom_icon_search.to_lowercase();
+                    egui::ScrollArea::vertical().max_height(400.0).show(ui, |ui| {
+                        egui::Grid::new("custom_icon_pick")
+                            .spacing([8.0, 8.0])
+                            .show(ui, |ui| {
+                                let mut col = 0;
+                                for (local, handle) in app.image_editor.icons.iter().filter(|(local, _)| {
+                                    let global = icon_capacity + *local;
+                                    needle.is_empty() || global.to_string().contains(&needle)
+                                }) {
+                                    let global = icon_capacity + *local;
+                                    ui.vertical(|ui| {
+                                        if ui
+                                            .add(egui::Button::image(
+                                                egui::Image::from_texture(handle)
+                                                    .fit_to_exact_size(egui::vec2(72.0, 72.0)),
+                                            ))
+                                            .on_hover_text(format!("Img = {}", global))
+                                            .clicked()
+                                        {
+                                            chosen_img = Some(global);
+                                        }
+                                        ui.label(format!("{}", global));
+                                    });
+                                    col += 1;
+                                    if col % 4 == 0 {
+                                        ui.end_row();
+                                    }
+                                }
+                            });
+                    });
+                }
+            });
+        app.custom_icon_picker_open = open;
+        if let Some(global) = chosen_img {
+            if let Some(cat) = app.working_catalog.as_mut() {
+                if let Some(def) = cat.loot_defs.get_mut(idx) {
+                    def.img = global;
+                }
+            }
+            app.custom_icon_picker_open = false;
+        }
+    }
 
     if app.magic_item_picker_open {
         let target_slot_id = match app.magic_item_picker_target_slot_id {

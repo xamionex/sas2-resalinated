@@ -1,9 +1,115 @@
 use crate::app::ResalinatedApp;
+use crate::atlas::HitboxPreview;
 use crate::tabs::utils::{field_row, CHANGED_COLOR};
 use eframe::egui;
 use egui::Ui;
-use sas2_parser::monster_catalog::{MonsterDef, MonsterFieldValue};
+use sas2_parser::monster_catalog::{MonsterCatalog, MonsterDef, MonsterFieldValue};
 use sas2_parser::monster_names;
+
+/// Return a monster name not already used in the catalog (appends _1, _2, ... on collision).
+fn next_unique_monster_name(catalog: &MonsterCatalog, base: &str) -> String {
+    let exists = |n: &str| catalog.monsters.iter().any(|m| m.name == n);
+    if !exists(base) {
+        return base.to_string();
+    }
+    let mut i = 1;
+    loop {
+        let candidate = format!("{}_{}", base, i);
+        if !exists(&candidate) {
+            return candidate;
+        }
+        i += 1;
+    }
+}
+
+/// Append a monster def, keep the name index in sync, select it, and clear filters so it shows.
+fn add_monster(app: &mut ResalinatedApp, def: MonsterDef) {
+    if let Some(cat) = app.working_monster_catalog.as_mut() {
+        let idx = cat.monsters.len();
+        cat.by_name.insert(def.name.clone(), idx as i32);
+        cat.monsters.push(def);
+        app.selected_monster_idx = Some(idx);
+        app.monster_search_filter.clear();
+        app.show_only_changed_monsters = false;
+    }
+}
+
+/// Create a blank monster. Title/description keep exactly 20 slots so the binary layout stays
+/// valid; everything else starts neutral and is filled in via the editor.
+fn create_blank_monster(app: &mut ResalinatedApp) {
+    let name = app
+        .working_monster_catalog
+        .as_ref()
+        .map(|c| next_unique_monster_name(c, "new_monster"))
+        .unwrap_or_else(|| "new_monster".to_string());
+
+    let def = MonsterDef {
+        name,
+        titles: vec![String::new(); 20],
+        descriptions: vec![String::new(); 20],
+        type_: 0,
+        sub_type: 0,
+        cost: 0.0,
+        img: -1,
+        alt_img: -1,
+        texture: String::new(),
+        def: String::new(),
+        box_width: 64,
+        box_height: 96,
+        box_sub_height: 0,
+        shadow_width: 48,
+        shadow_height: 16,
+        fields: Vec::new(),
+        flags: Vec::new(),
+    };
+    add_monster(app, def);
+}
+
+/// Remove the selected monster from the working catalog and reindex. Vanilla monsters removed here
+/// are recorded as deletions on save, so they also drop out of the applied catalog.
+fn delete_selected_monster(app: &mut ResalinatedApp) {
+    let Some(idx) = app.selected_monster_idx else {
+        return;
+    };
+    let removed_name = app
+        .working_monster_catalog
+        .as_ref()
+        .and_then(|c| c.monsters.get(idx))
+        .map(|d| d.name.clone());
+    if let Some(cat) = app.working_monster_catalog.as_mut() {
+        if idx >= cat.monsters.len() {
+            return;
+        }
+        cat.monsters.remove(idx);
+        cat.by_name.clear();
+        for (i, d) in cat.monsters.iter().enumerate() {
+            cat.by_name.insert(d.name.clone(), i as i32);
+        }
+    }
+    if let Some(name) = removed_name {
+        app.monster_disabled.remove(&name);
+    }
+    app.selected_monster_idx = None;
+}
+
+/// Clone the selected monster under a new unique "<name>_copy" name (full structure preserved).
+fn clone_selected_monster(app: &mut ResalinatedApp) {
+    let Some(idx) = app.selected_monster_idx else {
+        return;
+    };
+    let new_def = {
+        let Some(cat) = app.working_monster_catalog.as_ref() else {
+            return;
+        };
+        let Some(src) = cat.monsters.get(idx) else {
+            return;
+        };
+        let mut def = src.clone();
+        def.name = next_unique_monster_name(cat, &format!("{}_copy", src.name));
+        def
+    };
+    add_monster(app, new_def);
+}
 
 fn add_monster_label(ui: &mut Ui, title: &str, font_size: f32) {
     for word in title.split_whitespace() {
@@ -29,6 +135,43 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
     } else {
         full_width * 0.5
     };
+
+    // Candidates for "Copy logic from" (name, display, type, subtype).
+    let copy_candidates: Vec<(String, String, i32, i32)> = app
+        .working_monster_catalog
+        .as_ref()
+        .map(|c| {
+            c.monsters
+                .iter()
+                .map(|d| {
+                    let display = d
+                        .titles
+                        .first()
+                        .filter(|t| !t.is_empty())
+                        .cloned()
+                        .unwrap_or_else(|| d.name.clone());
+                    (d.name.clone(), display, d.type_, d.sub_type)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut request_copy_picker = false;
+
+    // Assemble the selected monster's sprite (with origin) for the hitbox overlay, before the
+    // detail panel borrows the catalog mutably.
+    let hitbox_preview: Option<HitboxPreview> = app.selected_monster_idx.and_then(|idx| {
+        let names = app
+            .working_monster_catalog
+            .as_ref()
+            .and_then(|c| c.monsters.get(idx))
+            .map(|d| (d.def.clone(), d.texture.clone()));
+        match names {
+            Some((def_name, texture)) if !def_name.is_empty() && !texture.is_empty() => app
+                .monster_texture_cache
+                .get_idle_with_origin(ui.ctx(), &def_name, &texture),
+            _ => None,
+        }
+    });
 
     // Right panel: editor
     let right_panel = egui::Panel::right("monster_details")
@@ -61,7 +204,13 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
                     .monsters
                     .get_mut(idx)
                 {
-                    show_monsterdef_editor(ui, def, vanilla_def.as_ref());
+                    show_monsterdef_editor(
+                        ui,
+                        def,
+                        vanilla_def.as_ref(),
+                        hitbox_preview.as_ref(),
+                        &mut request_copy_picker,
+                    );
                 } else {
                     ui.label("Invalid selection.");
                 }
@@ -69,6 +218,78 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
                 ui.label("Select a monster to edit.");
             }
         });
+
+    if request_copy_picker {
+        app.copy_picker_open = true;
+        app.copy_picker_search.clear();
+    }
+
+    // "Copy logic from" picker: searchable popup of same-type monsters.
+    if app.copy_picker_open {
+        let sel = app.selected_monster_idx.and_then(|idx| {
+            app.working_monster_catalog
+                .as_ref()
+                .and_then(|c| c.monsters.get(idx))
+                .map(|d| (d.name.clone(), d.type_, d.sub_type))
+        });
+        if let Some((sel_name, sel_type, sel_sub)) = sel {
+            let mut chosen: Option<String> = None;
+            let mut open = app.copy_picker_open;
+            egui::Window::new("Copy logic from")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .open(&mut open)
+                .show(ui.ctx(), |ui| {
+                    ui.set_width(320.0);
+                    ui.label(format!(
+                        "Monsters of type {} ({})",
+                        sel_type,
+                        monster_names::get_monster_type_name(sel_type)
+                    ));
+                    ui.horizontal(|ui| {
+                        ui.label("🔍");
+                        ui.text_edit_singleline(&mut app.copy_picker_search);
+                    });
+                    ui.separator();
+
+                    let needle = app.copy_picker_search.to_lowercase();
+                    let mut matches: Vec<&(String, String, i32, i32)> = copy_candidates
+                        .iter()
+                        .filter(|(n, disp, t, _)| {
+                            *t == sel_type
+                                && n != &sel_name
+                                && (needle.is_empty()
+                                    || n.to_lowercase().contains(&needle)
+                                    || disp.to_lowercase().contains(&needle))
+                        })
+                        .collect();
+                    matches.sort_by_key(|(_, _, _, st)| (*st != sel_sub) as i32);
+
+                    egui::ScrollArea::vertical().max_height(400.0).show(ui, |ui| {
+                        for (n, disp, _, st) in matches {
+                            let label = if *st == sel_sub {
+                                format!("{} ({})", disp, n)
+                            } else {
+                                format!("{} ({}) [sub {}]", disp, n, st)
+                            };
+                            if ui.selectable_label(false, label).clicked() {
+                                chosen = Some(n.clone());
+                            }
+                        }
+                    });
+                });
+            app.copy_picker_open = open;
+            if let Some(src_name) = chosen {
+                if let Some(idx) = app.selected_monster_idx {
+                    apply_monster_copy_logic(app, idx, &src_name);
+                }
+                app.copy_picker_open = false;
+            }
+        } else {
+            app.copy_picker_open = false;
+        }
+    }
 
     let actual_width = right_panel.response.rect.width();
     if (actual_width - app.config.monsters_details_panel_width).abs() > 0.1 {
@@ -89,6 +310,59 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
             &mut app.show_only_changed_monsters,
             "Show Only Changed Monsters",
         );
+
+        // Create / clone monsters.
+        ui.horizontal(|ui| {
+            if ui.button("New Monster").clicked() {
+                create_blank_monster(app);
+            }
+            let has_sel = app.selected_monster_idx.is_some();
+            if ui
+                .add_enabled(has_sel, egui::Button::new("Clone Selected"))
+                .on_hover_text("Duplicate the selected monster under a new unique name")
+                .clicked()
+            {
+                clone_selected_monster(app);
+            }
+
+            // Disable (reversible) / Enable / Delete, mirroring the Items tab.
+            let sel = app.selected_monster_idx.and_then(|idx| {
+                app.working_monster_catalog
+                    .as_ref()
+                    .and_then(|c| c.monsters.get(idx))
+                    .map(|d| d.name.clone())
+            });
+            if let Some(name) = sel {
+                let is_vanilla = app
+                    .vanilla_monster_catalog
+                    .as_ref()
+                    .map_or(false, |v| v.by_name.contains_key(&name));
+                let is_disabled = app.monster_disabled.contains(&name);
+                if is_disabled {
+                    if ui
+                        .button("Enable")
+                        .on_hover_text("Re-include this monster in the game")
+                        .clicked()
+                    {
+                        app.monster_disabled.remove(&name);
+                    }
+                    if !is_vanilla
+                        && ui
+                            .button("Delete")
+                            .on_hover_text("Permanently remove this non-vanilla monster")
+                            .clicked()
+                    {
+                        delete_selected_monster(app);
+                    }
+                } else if ui
+                    .button("Disable")
+                    .on_hover_text("Exclude from the game but keep it (re-enableable)")
+                    .clicked()
+                {
+                    app.monster_disabled.insert(name);
+                }
+            }
+        });
         ui.add_space(4.0);
 
         let filter = app.monster_search_filter.to_lowercase();
@@ -192,6 +466,13 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
                                     .cloned()
                                     .unwrap_or_else(|| def.name.clone());
                                 add_monster_label(ui, &display_name, app.config.item_font_size);
+                                if app.monster_disabled.contains(&def.name) {
+                                    ui.label(
+                                        egui::RichText::new("(disabled)")
+                                            .small()
+                                            .color(egui::Color32::from_rgb(220, 120, 120)),
+                                    );
+                                }
                             });
                         }
                     });
@@ -211,7 +492,30 @@ fn monster_values_differ(a: &MonsterFieldValue, b: &MonsterFieldValue) -> bool {
     }
 }
 
-fn show_monsterdef_editor(ui: &mut Ui, def: &mut MonsterDef, vanilla: Option<&MonsterDef>) {
+/// Replace the monster at `idx`'s fields and flags with those of `src_name`.
+fn apply_monster_copy_logic(app: &mut ResalinatedApp, idx: usize, src_name: &str) {
+    let src = app
+        .working_monster_catalog
+        .as_ref()
+        .and_then(|c| c.monsters.iter().find(|d| d.name == src_name))
+        .map(|d| (d.fields.clone(), d.flags.clone()));
+    if let Some((fields, flags)) = src {
+        if let Some(cat) = app.working_monster_catalog.as_mut() {
+            if let Some(def) = cat.monsters.get_mut(idx) {
+                def.fields = fields;
+                def.flags = flags;
+            }
+        }
+    }
+}
+
+fn show_monsterdef_editor(
+    ui: &mut Ui,
+    def: &mut MonsterDef,
+    vanilla: Option<&MonsterDef>,
+    hitbox_preview: Option<&HitboxPreview>,
+    request_copy_picker: &mut bool,
+) {
     egui::ScrollArea::vertical()
         .auto_shrink([false; 2])
         .show(ui, |ui| {
@@ -377,6 +681,22 @@ fn show_monsterdef_editor(ui: &mut Ui, def: &mut MonsterDef, vanilla: Option<&Mo
                 },
             );
 
+            // Hitbox (the damage-receiving box). Per the game's HitPoint.CheckPoint, a hit lands
+            // when the attack point is within [origin.X - boxWidth/2, origin.X + boxWidth/2]
+            // horizontally and [origin.Y - boxHeight, origin.Y + boxSubHeight] vertically, where
+            // origin is the monster's ground position. The schematic below shows that box to scale.
+            ui.separator();
+            ui.horizontal(|ui| {
+                ui.heading("Hitbox");
+                ui.label("(?)").on_hover_text(
+                    "Damage-receiving box, centered on the monster's ground origin.\n\
+                     Width spans +/- BoxWidth/2.\n\
+                     BoxHeight extends up from the origin, BoxSubHeight down.\n\
+                     Shadow Width/Height size the ground shadow only.",
+                );
+            });
+            draw_hurtbox_schematic(ui, def, hitbox_preview);
+
             // Box / shadow dimensions
             for (label, val, van) in [
                 (
@@ -425,10 +745,20 @@ fn show_monsterdef_editor(ui: &mut Ui, def: &mut MonsterDef, vanilla: Option<&Mo
 
             // Fields
             ui.collapsing(format!("Fields ({})", def.fields.len()), |ui| {
+                // Copy logic (fields + flags) from another monster of the same type.
+                if ui
+                    .button("Copy logic from...")
+                    .on_hover_text("Replace this monster's fields and flags with another monster's")
+                    .clicked()
+                {
+                    *request_copy_picker = true;
+                }
+
+                let mut remove_field: Option<usize> = None;
                 egui::ScrollArea::vertical()
                     .max_height(280.0)
                     .show(ui, |ui| {
-                        for field in def.fields.iter_mut() {
+                        for (field_index, field) in def.fields.iter_mut().enumerate() {
                             let fname = format!(
                                 "{}: {}",
                                 field.id,
@@ -469,9 +799,22 @@ fn show_monsterdef_editor(ui: &mut Ui, def: &mut MonsterDef, vanilla: Option<&Mo
                                         }
                                     }
                                 }
+                                if ui
+                                    .small_button("x")
+                                    .on_hover_text("Remove this field")
+                                    .clicked()
+                                {
+                                    remove_field = Some(field_index);
+                                }
                             });
                         }
                     });
+
+                if let Some(i) = remove_field {
+                    if i < def.fields.len() {
+                        def.fields.remove(i);
+                    }
+                }
             });
 
             // Flags as checkboxes
@@ -529,4 +872,100 @@ fn show_monsterdef_editor(ui: &mut Ui, def: &mut MonsterDef, vanilla: Option<&Mo
                 },
             );
         });
+}
+
+/// Draw a to-scale schematic of the monster hurtbox (damage-receiving area) and ground shadow,
+/// with the monster's idle sprite rendered behind it so the box size can be judged against the
+/// actual entity.
+///
+/// Mirrors the in-game box from HitPoint.CheckPoint: horizontally centered on the origin spanning
+/// +/- boxWidth/2, vertically from origin - boxHeight (top) to origin + boxSubHeight (bottom).
+/// Both the box and the sprite share the monster's ground origin and the same world-pixel scale.
+fn draw_hurtbox_schematic(ui: &mut Ui, def: &MonsterDef, preview: Option<&HitboxPreview>) {
+    use egui::{Color32, Pos2, Rect, Stroke};
+
+    let bw = def.box_width.max(1) as f32;
+    let bh = def.box_height.max(0) as f32;
+    let bsh = def.box_sub_height.max(0) as f32;
+    let sw = def.shadow_width.max(0) as f32;
+
+    // Extents from the origin, expanded to contain both the box and (if present) the sprite.
+    let mut ext_l = bw * 0.5;
+    let mut ext_r = bw * 0.5;
+    let mut ext_u = bh;
+    let mut ext_d = bsh;
+    if let Some(p) = preview {
+        let (ox, oy) = p.origin;
+        let (pw, ph) = (p.size.0 as f32, p.size.1 as f32);
+        ext_l = ext_l.max(ox);
+        ext_r = ext_r.max(pw - ox);
+        ext_u = ext_u.max(oy);
+        ext_d = ext_d.max(ph - oy);
+    }
+    let total_w = (ext_l + ext_r).max(1.0);
+    let total_h = (ext_u + ext_d).max(1.0);
+
+    let area = egui::vec2(ui.available_width().min(260.0), 200.0);
+    let (rect, _) = ui.allocate_exact_size(area, egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 4.0, Color32::from_gray(28));
+
+    let pad = 18.0;
+    let scale =
+        ((rect.width() - 2.0 * pad) / total_w).min((rect.height() - 2.0 * pad) / total_h);
+    if !scale.is_finite() || scale <= 0.0 {
+        return;
+    }
+
+    // Origin position inside the drawing area.
+    let cx = rect.min.x + pad + ext_l * scale;
+    let origin_y = rect.min.y + pad + ext_u * scale;
+
+    // Sprite (behind the box).
+    if let Some(p) = preview {
+        let (ox, oy) = p.origin;
+        let (pw, ph) = (p.size.0 as f32, p.size.1 as f32);
+        let top_left = Pos2::new(cx - ox * scale, origin_y - oy * scale);
+        let spr_rect = Rect::from_min_size(top_left, egui::vec2(pw * scale, ph * scale));
+        painter.image(
+            p.handle.id(),
+            spr_rect,
+            Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0)),
+            Color32::WHITE,
+        );
+    }
+
+    // Hurtbox.
+    let left = cx - bw * 0.5 * scale;
+    let right = cx + bw * 0.5 * scale;
+    let top = origin_y - bh * scale;
+    let bottom = origin_y + bsh * scale;
+    let box_rect = Rect::from_min_max(Pos2::new(left, top), Pos2::new(right, bottom));
+    painter.rect_filled(box_rect, 0.0, Color32::from_rgba_unmultiplied(220, 60, 60, 40));
+    painter.rect_stroke(
+        box_rect,
+        0.0,
+        Stroke::new(1.5, Color32::from_rgb(230, 80, 80)),
+        egui::StrokeKind::Middle,
+    );
+
+    // Ground shadow (width only, drawn at the origin line).
+    if sw > 0.0 {
+        let half = sw * 0.5 * scale;
+        painter.line_segment(
+            [Pos2::new(cx - half, origin_y), Pos2::new(cx + half, origin_y)],
+            Stroke::new(3.0, Color32::from_rgba_unmultiplied(120, 120, 180, 160)),
+        );
+    }
+
+    // Origin marker (ground position).
+    let oc = Color32::from_rgb(255, 220, 80);
+    painter.line_segment(
+        [Pos2::new(cx - 5.0, origin_y), Pos2::new(cx + 5.0, origin_y)],
+        Stroke::new(1.5, oc),
+    );
+    painter.line_segment(
+        [Pos2::new(cx, origin_y - 5.0), Pos2::new(cx, origin_y + 5.0)],
+        Stroke::new(1.5, oc),
+    );
 }

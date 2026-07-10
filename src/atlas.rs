@@ -42,15 +42,23 @@ impl ItemAtlas {
 
     /// Returns the UV rect for the given loot definition's icon, or None if the item has no icon (img < 0).
     pub fn icon_uv(&self, def: &LootDef) -> Option<Rect> {
-        if def.img < 0 {
+        self.icon_uv_for_img(def.img)
+    }
+
+    /// UV rect for a raw icon index in the vanilla atlas, or None if negative or beyond the atlas
+    /// (a custom-icon index).
+    pub fn icon_uv_for_img(&self, img: i32) -> Option<Rect> {
+        if img < 0 {
             return None;
         }
-        // Icons sit on a 32-wide grid of 128×128 tiles
-        let x = (def.img as u32 % 32) * 128;
-        let y = (def.img as u32 / 32) * 128;
+        // Icons sit on a 32-wide grid of 128×128 tiles.
+        let x = (img as u32 % 32) * 128;
+        let y = (img as u32 / 32) * 128;
+        if y + 128 > self.height {
+            return None;
+        }
         let w = self.width as f32;
         let h = self.height as f32;
-
         Some(Rect::from_min_max(
             pos2(x as f32 / w, y as f32 / h),
             pos2((x + 128) as f32 / w, (y + 128) as f32 / h),
@@ -60,6 +68,16 @@ impl ItemAtlas {
 
 const MAX_UPLOADS_PER_FRAME: usize = 4;
 
+/// An assembled idle sprite plus the in-image location of the character origin, used to draw the
+/// hitbox overlay to scale around the rendered body.
+#[derive(Clone)]
+pub struct HitboxPreview {
+    pub handle: TextureHandle,
+    /// Character-space origin (0,0) position within the image, in pixels.
+    pub origin: (f32, f32),
+    pub size: (u32, u32),
+}
+
 pub struct MonsterTextureCache {
     textures: HashMap<String, TextureHandle>,
     loading_complete: bool,
@@ -67,6 +85,7 @@ pub struct MonsterTextureCache {
     total_textures: usize,
     loaded_textures: usize,
     assembled_cache: HashMap<(String, String), TextureHandle>,
+    hitbox_cache: HashMap<(String, String), HitboxPreview>,
     game_path: Option<PathBuf>,
     xtexture_meta: Option<HashMap<String, XTextureMeta>>,
 }
@@ -80,6 +99,7 @@ impl MonsterTextureCache {
             total_textures: 0,
             loaded_textures: 0,
             assembled_cache: HashMap::new(),
+            hitbox_cache: HashMap::new(),
             game_path: None,
             xtexture_meta: None,
         }
@@ -87,6 +107,9 @@ impl MonsterTextureCache {
 
     pub(crate) fn set_game_path(&mut self, game_path: &Path) {
         self.game_path = Some(game_path.to_path_buf());
+        // Drop caches tied to the previous game path.
+        self.assembled_cache.clear();
+        self.hitbox_cache.clear();
 
         // Load sprite-cell metadata so assemble_monster_sprite can use the real
         // srcRect / origin for each tile rather than assuming a 128×128 grid.
@@ -229,6 +252,59 @@ impl MonsterTextureCache {
             }
         }
     }
+
+    /// Assemble (and cache) the monster's idle sprite together with its origin, for the hitbox
+    /// overlay. Prefers a PNG texture override so pixel edits are reflected, else the vanilla xnb.
+    pub fn get_idle_with_origin(
+        &mut self,
+        ctx: &egui::Context,
+        def_name: &str,
+        texture_name: &str,
+    ) -> Option<HitboxPreview> {
+        let game_path = self.game_path.as_ref()?.clone();
+        let key = (def_name.to_string(), texture_name.to_string());
+        if let Some(p) = self.hitbox_cache.get(&key) {
+            return Some(p.clone());
+        }
+
+        let zsx = game_path
+            .join("Character")
+            .join("data")
+            .join(format!("{}.zsx", def_name));
+        let char_def = CharDef::load_from_path(&zsx).ok()?;
+        let frame = char_def.idle_frame()?;
+
+        let png = game_path
+            .join("BepInEx/config/amione.SaS2Resalter/textures")
+            .join(format!("{}.png", texture_name));
+        let sheet = if png.exists() {
+            image::open(&png).ok()?.to_rgba8()
+        } else {
+            let xnb = game_path
+                .join("Content")
+                .join("gfx")
+                .join(format!("{}.xnb", texture_name));
+            load_texture_from_path(xnb.to_str().unwrap_or("")).ok()?
+        };
+
+        let tex_meta = self.xtexture_meta.as_ref().and_then(|m| m.get(texture_name));
+        let (img, origin) = assemble_frame_with_origin(frame, &sheet, tex_meta)?;
+        let (w, h) = (img.width(), img.height());
+        let pixels = img.into_vec();
+        let ci = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &pixels);
+        let handle = ctx.load_texture(
+            format!("hitbox_{}_{}", def_name, texture_name),
+            ci,
+            Default::default(),
+        );
+        let preview = HitboxPreview {
+            handle,
+            origin,
+            size: (w, h),
+        };
+        self.hitbox_cache.insert(key, preview.clone());
+        Some(preview)
+    }
 }
 
 // Sprites
@@ -277,8 +353,6 @@ pub fn assemble_monster_sprite(
         }
     };
 
-    const BODY_MAX: i32 = 384;
-
     // 3. Sprite sheet
     let tex_path = game_path
         .join("Content")
@@ -292,6 +366,31 @@ pub fn assemble_monster_sprite(
             return None;
         }
     };
+
+    assemble_frame(frame, &sheet, tex_meta)
+}
+
+/// Composite a single character frame onto a tightly-cropped RGBA canvas.
+///
+/// Shared by the bestiary preview (idle frame) and the animation editor (any frame). Uses the
+/// XTexture cell rect/origin when available, otherwise falls back to a 128x128 grid layout.
+pub fn assemble_frame(
+    frame: &sas2_parser::char_def::Frame,
+    sheet: &RgbaImage,
+    tex_meta: Option<&XTextureMeta>,
+) -> Option<RgbaImage> {
+    assemble_frame_with_origin(frame, sheet, tex_meta).map(|(img, _)| img)
+}
+
+/// Like [`assemble_frame`], but also returns where the character-space origin (0,0) lands inside
+/// the cropped canvas, in pixels. The hitbox overlay uses this to align the box (which is centered
+/// on that same origin) with the rendered sprite at a 1:1 world-pixel scale.
+pub fn assemble_frame_with_origin(
+    frame: &sas2_parser::char_def::Frame,
+    sheet: &RgbaImage,
+    tex_meta: Option<&XTextureMeta>,
+) -> Option<(RgbaImage, (f32, f32))> {
+    const BODY_MAX: i32 = 384;
 
     let sheet_w = sheet.width() as i32;
     let sheet_h = sheet.height() as i32;
@@ -384,10 +483,7 @@ pub fn assemble_monster_sprite(
     }
 
     if parts.is_empty() {
-        eprintln!(
-            "[assemble] No drawable parts for {}/{}",
-            def_name, texture_name
-        );
+        eprintln!("[assemble] No drawable parts for frame");
         return None;
     }
 
@@ -418,7 +514,7 @@ pub fn assemble_monster_sprite(
     let canvas_w = (max_x - min_x).ceil() as u32;
     let canvas_h = (max_y - min_y).ceil() as u32;
     if canvas_w == 0 || canvas_h == 0 {
-        eprintln!("[assemble] Zero-size canvas for {}", def_name);
+        eprintln!("[assemble] Zero-size canvas for frame");
         return None;
     }
 
@@ -518,5 +614,6 @@ pub fn assemble_monster_sprite(
         }
     }
 
-    Some(canvas)
+    // Character-space origin (0,0) maps to canvas pixel (-min_x, -min_y).
+    Some((canvas, (-min_x, -min_y)))
 }

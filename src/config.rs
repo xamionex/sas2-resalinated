@@ -29,6 +29,21 @@ pub struct ResalinatedConfig {
 
     #[serde(default)]
     pub dummy_drag_value: f32,
+
+    /// External image editor command used by the Textures tab's "Open in editor" action.
+    /// When empty, the OS default handler for the PNG is used. The PNG path is passed as the
+    /// final argument (e.g. "gimp", "C:/Program Files/Aseprite/Aseprite.exe").
+    #[serde(default)]
+    pub external_image_editor: String,
+
+    /// When true, new items (and items whose type changes) get the field set of their type,
+    /// copied from a vanilla item of that type. Preserves values for fields that already exist.
+    #[serde(default = "default_true")]
+    pub auto_type_fields: bool,
+}
+
+pub fn default_true() -> bool {
+    true
 }
 
 impl Default for ResalinatedConfig {
@@ -42,6 +57,8 @@ impl Default for ResalinatedConfig {
             item_font_size: default_item_font_size(),
             drag_value_sensitivity: default_drag_sensitivity(),
             dummy_drag_value: 0.0,
+            external_image_editor: String::new(),
+            auto_type_fields: true,
         }
     }
 }
