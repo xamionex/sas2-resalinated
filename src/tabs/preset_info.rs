@@ -59,29 +59,46 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
             }
         });
     } else {
-        if ui.button("Save Modified as Preset").clicked() {
-            if app.edit_folder_name.is_empty() {
-                app.error_message = Some("Folder name cannot be empty".to_string());
-            } else {
-                let folder_name = app.edit_folder_name.clone();
-                let meta = app.edit_meta.clone();
-                if app
-                    .preset_manager
-                    .installed_presets()
-                    .iter()
-                    .any(|p| p.folder_name == folder_name)
-                {
-                    app.confirm_overwrite_folder = Some(folder_name);
+        ui.horizontal(|ui| {
+            if ui.button("Save Modified as Preset").clicked() {
+                if app.edit_folder_name.is_empty() {
+                    app.error_message = Some("Folder name cannot be empty".to_string());
                 } else {
-                    match app.save_preset(&folder_name, meta) {
-                        Ok(()) => {
-                            app.error_message = None;
-                            app.active_tab = crate::tabs::Tab::Manager;
+                    let folder_name = app.edit_folder_name.clone();
+                    let meta = app.edit_meta.clone();
+                    if app
+                        .preset_manager
+                        .installed_presets()
+                        .iter()
+                        .any(|p| p.folder_name == folder_name)
+                    {
+                        app.confirm_overwrite_folder = Some(folder_name);
+                    } else {
+                        match app.save_preset(&folder_name, meta) {
+                            Ok(()) => {
+                                app.error_message = None;
+                                app.active_tab = crate::tabs::Tab::Manager;
+                            }
+                            Err(e) => app.error_message = Some(e),
                         }
-                        Err(e) => app.error_message = Some(e),
                     }
                 }
             }
-        }
+            if !app.edit_folder_name.is_empty() {
+                if ui.button("Export").clicked() {
+                    let name = app.edit_folder_name.clone();
+                    if let Some(path) = rfd::FileDialog::new()
+                        .set_file_name(&format!("{}.zip", name))
+                        .save_file()
+                    {
+                        if let Err(e) = app.preset_manager.export_preset(&name, &path) {
+                            app.error_message = Some(e);
+                        } else {
+                            app.error_message = None;
+                        }
+                    }
+                }
+            }
+        });
     }
 }

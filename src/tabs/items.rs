@@ -798,6 +798,7 @@ fn show_lootdef_editor(
                     {
                         app.vanilla_icon_picker_open = true;
                         app.vanilla_icon_search.clear();
+                        app.vanilla_icon_picker_focus = true;
                     }
                     if ui
                         .button("Pick custom img")
@@ -806,6 +807,7 @@ fn show_lootdef_editor(
                     {
                         app.custom_icon_picker_open = true;
                         app.custom_icon_search.clear();
+                        app.custom_icon_picker_focus = true;
                     }
                     if let Some(v) = &vanilla {
                         if def.img != v.img && ui.button("↺").clicked() {
@@ -863,6 +865,7 @@ fn show_lootdef_editor(
                 {
                     app.copy_picker_open = true;
                     app.copy_picker_search.clear();
+                    app.copy_picker_focus = true;
                 }
 
                 let mut remove_field: Option<usize> = None;
@@ -919,6 +922,7 @@ fn show_lootdef_editor(
                                     if ui.button(&current_display).clicked() {
                                         app.magic_item_picker_open = true;
                                         app.magic_item_search.clear();
+                                        app.magic_item_picker_focus = true;
                                         app.magic_item_picker_target_slot_id = Some(field.id);
                                     }
                                     if let Some(van) = &vanilla_val {
@@ -1070,7 +1074,11 @@ fn show_lootdef_editor(
                 ));
                 ui.horizontal(|ui| {
                     ui.label("🔍");
-                    ui.text_edit_singleline(&mut app.copy_picker_search);
+                    let resp = ui.text_edit_singleline(&mut app.copy_picker_search);
+                    if app.copy_picker_focus {
+                        resp.request_focus();
+                        app.copy_picker_focus = false;
+                    }
                 });
                 ui.separator();
 
@@ -1123,7 +1131,11 @@ fn show_lootdef_editor(
                 ui.set_width(440.0);
                 ui.horizontal(|ui| {
                     ui.label("🔍");
-                    ui.text_edit_singleline(&mut app.vanilla_icon_search);
+                    let resp = ui.text_edit_singleline(&mut app.vanilla_icon_search);
+                    if app.vanilla_icon_picker_focus {
+                        resp.request_focus();
+                        app.vanilla_icon_picker_focus = false;
+                    }
                 });
                 ui.separator();
                 let needle = app.vanilla_icon_search.to_lowercase();
@@ -1188,7 +1200,11 @@ fn show_lootdef_editor(
                 ui.set_width(360.0);
                 ui.horizontal(|ui| {
                     ui.label("🔍");
-                    ui.text_edit_singleline(&mut app.custom_icon_search);
+                    let resp = ui.text_edit_singleline(&mut app.custom_icon_search);
+                    if app.custom_icon_picker_focus {
+                        resp.request_focus();
+                        app.custom_icon_picker_focus = false;
+                    }
                 });
                 ui.label(
                     egui::RichText::new("Search by the Img value. Custom icons are managed in the Images tab.")
@@ -1261,7 +1277,11 @@ fn show_lootdef_editor(
                 ui.set_width(300.0);
                 ui.horizontal(|ui| {
                     ui.label("🔍");
-                    ui.text_edit_singleline(&mut app.magic_item_search);
+                    let resp = ui.text_edit_singleline(&mut app.magic_item_search);
+                    if app.magic_item_picker_focus {
+                        resp.request_focus();
+                        app.magic_item_picker_focus = false;
+                    }
                 });
                 ui.separator();
 

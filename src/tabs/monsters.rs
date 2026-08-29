@@ -222,6 +222,7 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
     if request_copy_picker {
         app.copy_picker_open = true;
         app.copy_picker_search.clear();
+        app.copy_picker_focus = true;
     }
 
     // "Copy logic from" picker: searchable popup of same-type monsters.
@@ -249,7 +250,11 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
                     ));
                     ui.horizontal(|ui| {
                         ui.label("🔍");
-                        ui.text_edit_singleline(&mut app.copy_picker_search);
+                        let resp = ui.text_edit_singleline(&mut app.copy_picker_search);
+                        if app.copy_picker_focus {
+                            resp.request_focus();
+                            app.copy_picker_focus = false;
+                        }
                     });
                     ui.separator();
 
