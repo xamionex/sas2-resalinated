@@ -40,6 +40,11 @@ pub struct ResalinatedConfig {
     /// copied from a vanilla item of that type. Preserves values for fields that already exist.
     #[serde(default = "default_true")]
     pub auto_type_fields: bool,
+
+    /// When true, saving a preset over an existing folder skips the overwrite
+    /// confirmation dialog and always overwrites.
+    #[serde(default)]
+    pub ignore_overwrite_warning: bool,
 }
 
 pub fn default_true() -> bool {
@@ -59,6 +64,7 @@ impl Default for ResalinatedConfig {
             dummy_drag_value: 0.0,
             external_image_editor: String::new(),
             auto_type_fields: true,
+            ignore_overwrite_warning: false,
         }
     }
 }

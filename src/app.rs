@@ -79,6 +79,8 @@ pub struct ResalinatedApp {
     // Preset Info tab
     pub edit_folder_name: String,
     pub edit_meta: PresetMeta,
+    /// When true the folder name field is editable (manual override, not recommended).
+    pub folder_override_enabled: bool,
     // Manager tab
     pub manager_selected_available: Option<usize>,
     pub manager_selected_enabled: Option<usize>,
@@ -144,7 +146,10 @@ impl Default for ResalinatedApp {
                 version: "1.0.0".to_string(),
                 author: String::new(),
                 description: String::new(),
+                editor_version: None,
+                folder_override: false,
             },
+            folder_override_enabled: false,
             manager_selected_available: None,
             manager_selected_enabled: None,
             error_message: None,
@@ -671,6 +676,13 @@ impl ResalinatedApp {
             .map_err(|e| format!("Delta serialization error: {}", e))
     }
 
+    /// Full path of the preset folder currently being edited (override or GUID based).
+    pub fn preset_folder_path(&self) -> PathBuf {
+        self.preset_manager
+            .presets_dir()
+            .join(&self.edit_folder_name)
+    }
+
     pub fn save_preset(&mut self, folder_name: &str, meta: PresetMeta) -> Result<(), String> {
         let loot_delta = self.build_delta_catalog()?;
         self.preset_manager
@@ -1053,6 +1065,7 @@ impl ResalinatedApp {
         {
             self.edit_meta = p.meta.clone();
             self.edit_folder_name = p.folder_name.clone();
+            self.folder_override_enabled = p.meta.folder_override;
         }
         self.active_tab = Tab::PresetInfo;
     }

@@ -1,4 +1,5 @@
 use crate::app::ResalinatedApp;
+use crate::preset::guid_folder_name;
 use eframe::egui;
 use egui::Ui;
 
@@ -8,8 +9,36 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
 
     ui.horizontal(|ui| {
         ui.label("Folder Name:");
+        ui.add_enabled(
+            app.folder_override_enabled,
+            egui::TextEdit::singleline(&mut app.edit_folder_name),
+        );
+        if app.folder_override_enabled {
+            if ui
+                .button("Use GUID")
+                .on_hover_text("Back to the automatic GUID folder name")
+                .clicked()
+            {
+                app.folder_override_enabled = false;
+                app.edit_folder_name = guid_folder_name(&app.edit_meta);
+            }
+        } else if ui
+            .button("Override Folder (not recommended)")
+            .on_hover_text("Manually choose the folder name. Two presets with the same folder name would overwrite each other.")
+            .clicked()
+        {
+            app.folder_override_enabled = true;
+        }
     });
-    ui.text_edit_singleline(&mut app.edit_folder_name);
+    app.edit_meta.folder_override = app.folder_override_enabled;
+    ui.label(
+        egui::RichText::new(format!(
+            "Full path: {}",
+            app.preset_folder_path().display()
+        ))
+        .small()
+        .weak(),
+    );
 
     ui.horizontal(|ui| {
         ui.label("Name:");
@@ -29,6 +58,18 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
     });
 
     ui.separator();
+
+    ui.horizontal(|ui| {
+        if ui
+            .checkbox(
+                &mut app.config.ignore_overwrite_warning,
+                "Ignore overwrite warning (always overwrite)",
+            )
+            .changed()
+        {
+            app.config_save_timer = 0.1;
+        }
+    });
 
     // Overwrite confirmation, only clear when user explicitly answers
     if let Some(ref existing_folder) = app.confirm_overwrite_folder.clone() {
@@ -61,19 +102,26 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
     } else {
         ui.horizontal(|ui| {
             if ui.button("Save Modified as Preset").clicked() {
-                if app.edit_folder_name.is_empty() {
+                let folder_name = if app.folder_override_enabled {
+                    app.edit_folder_name.clone()
+                } else {
+                    guid_folder_name(&app.edit_meta)
+                };
+                if folder_name.is_empty() {
                     app.error_message = Some("Folder name cannot be empty".to_string());
                 } else {
-                    let folder_name = app.edit_folder_name.clone();
                     let meta = app.edit_meta.clone();
-                    if app
+                    let exists = app
                         .preset_manager
                         .installed_presets()
                         .iter()
-                        .any(|p| p.folder_name == folder_name)
-                    {
+                        .any(|p| p.folder_name == folder_name);
+                    if exists && !app.config.ignore_overwrite_warning {
                         app.confirm_overwrite_folder = Some(folder_name);
                     } else {
+                        if exists {
+                            let _ = app.preset_manager.delete_preset(&folder_name);
+                        }
                         match app.save_preset(&folder_name, meta) {
                             Ok(()) => {
                                 app.error_message = None;

@@ -20,7 +20,7 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
         .max_size(full_width * 0.6)
         .show_inside(ui, |ui| {
             ui.heading("Available Presets");
-            let available: Vec<String> = app
+            let available: Vec<(String, String)> = app
                 .preset_manager
                 .installed_presets()
                 .iter()
@@ -29,13 +29,13 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
                         .enabled_presets()
                         .contains(&p.folder_name)
                 })
-                .map(|p| p.folder_name.clone())
+                .map(|p| (p.folder_name.clone(), p.display_name()))
                 .collect();
 
             egui::ScrollArea::vertical().show(ui, |ui| {
-                for (i, name) in available.iter().enumerate() {
+                for (i, (_, display)) in available.iter().enumerate() {
                     if ui
-                        .selectable_label(app.manager_selected_available == Some(i), name)
+                        .selectable_label(app.manager_selected_available == Some(i), display)
                         .clicked()
                     {
                         app.manager_selected_available = Some(i);
@@ -47,7 +47,7 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
                 ui.horizontal(|ui| {
                     if ui.button("Enable").clicked() {
                         if let Some(idx) = app.manager_selected_available {
-                            let name = available[idx].clone();
+                            let name = available[idx].0.clone();
                             app.preset_manager.enable_preset(&name);
                             app.manager_selected_available = None;
                             app.manager_selected_enabled = None;
@@ -55,13 +55,13 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
                     }
                     if ui.button("Edit").clicked() {
                         if let Some(idx) = app.manager_selected_available {
-                            let name = available[idx].clone();
+                            let name = available[idx].0.clone();
                             app.load_preset(&name);
                         }
                     }
                     if ui.button("Delete").clicked() {
                         if let Some(idx) = app.manager_selected_available {
-                            let name = available[idx].clone();
+                            let name = available[idx].0.clone();
                             if let Err(e) = app.preset_manager.delete_preset(&name) {
                                 app.error_message = Some(e);
                             } else {
@@ -72,7 +72,7 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
                     }
                     if app.manager_selected_available.is_some() {
                         if ui.button("Export").clicked() {
-                            let name = available[app.manager_selected_available.unwrap()].clone();
+                            let name = available[app.manager_selected_available.unwrap()].0.clone();
                             if let Some(path) = rfd::FileDialog::new()
                                 .set_file_name(&format!("{}.zip", name))
                                 .save_file()
@@ -131,11 +131,17 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
             }
         });
 
-        let enabled = app.preset_manager.enabled_presets().to_vec();
+        let enabled: Vec<(String, String)> = app
+            .preset_manager
+            .installed_presets()
+            .iter()
+            .filter(|p| app.preset_manager.enabled_presets().contains(&p.folder_name))
+            .map(|p| (p.folder_name.clone(), p.display_name()))
+            .collect();
         egui::ScrollArea::vertical().show(ui, |ui| {
-            for (i, name) in enabled.iter().enumerate() {
+            for (i, (_, display)) in enabled.iter().enumerate() {
                 if ui
-                    .selectable_label(app.manager_selected_enabled == Some(i), name)
+                    .selectable_label(app.manager_selected_enabled == Some(i), display)
                     .clicked()
                 {
                     app.manager_selected_enabled = Some(i);
@@ -147,7 +153,7 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
             ui.horizontal(|ui| {
                 if ui.button("< Disable").clicked() {
                     if let Some(idx) = app.manager_selected_enabled {
-                        let name = enabled[idx].clone();
+                        let name = enabled[idx].0.clone();
                         if let Err(e) = app.preset_manager.disable_preset(&name) {
                             app.error_message = Some(e);
                         } else {
@@ -158,13 +164,13 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
                 }
                 if ui.button("Edit").clicked() {
                     if let Some(idx) = app.manager_selected_enabled {
-                        let name = enabled[idx].clone();
+                        let name = enabled[idx].0.clone();
                         app.load_preset(&name);
                     }
                 }
                 if app.manager_selected_enabled.is_some() {
                     if ui.button("Export").clicked() {
-                        let name = enabled[app.manager_selected_enabled.unwrap()].clone();
+                        let name = enabled[app.manager_selected_enabled.unwrap()].0.clone();
                         if let Some(path) = rfd::FileDialog::new()
                             .set_file_name(&format!("{}.zip", name))
                             .save_file()
@@ -196,14 +202,14 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
             });
             // Add Delete button (only for non-vanilla)
             let is_vanilla = if let Some(idx) = app.manager_selected_enabled {
-                &enabled[idx] == "Vanilla (Base)"
+                &enabled[idx].0 == "Vanilla (Base)"
             } else {
                 false
             };
             if !is_vanilla {
                 if ui.button("Delete").clicked() {
                     if let Some(idx) = app.manager_selected_enabled {
-                        let name = enabled[idx].clone();
+                        let name = enabled[idx].0.clone();
                         if let Err(e) = app.preset_manager.delete_preset(&name) {
                             app.error_message = Some(e);
                         } else {
