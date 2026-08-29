@@ -100,13 +100,43 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
             }
         });
     } else {
+        let is_vanilla = app.edit_folder_name == "Vanilla (Base)";
+        let target_folder = if app.folder_override_enabled {
+            app.edit_folder_name.clone()
+        } else {
+            guid_folder_name(&app.edit_meta)
+        };
+        // "Save as new preset" only makes sense when the identity changed (author/name/version or override folder), or when no preset is loaded.
+        let can_save_as_new =
+            app.edit_folder_name.is_empty() || target_folder != app.edit_folder_name;
         ui.horizontal(|ui| {
-            if ui.button("Save Modified as Preset").clicked() {
-                let folder_name = if app.folder_override_enabled {
-                    app.edit_folder_name.clone()
+            let save_resp = ui.add_enabled(!is_vanilla, egui::Button::new("Save"));
+            if save_resp
+                .on_hover_text(if is_vanilla {
+                    "The Vanilla preset cannot be modified"
                 } else {
-                    guid_folder_name(&app.edit_meta)
-                };
+                    "Save changes to this preset. If you renamed author/name/version, the folder is moved to the new GUID name."
+                })
+                .clicked()
+            {
+                match app.save_preset_in_place() {
+                    Ok(_) => {
+                        app.error_message = None;
+                        app.save_feedback_time = Some(std::time::Instant::now());
+                    }
+                    Err(e) => app.error_message = Some(e),
+                }
+            }
+            let save_as_new_resp = ui.add_enabled(can_save_as_new, egui::Button::new("Save as new preset"));
+            if save_as_new_resp
+                .on_hover_text(if can_save_as_new {
+                    "Save the current changes as a new preset, keeping the original untouched"
+                } else {
+                    "Rename author, name or version to save as a new preset"
+                })
+                .clicked()
+            {
+                let folder_name = target_folder;
                 if folder_name.is_empty() {
                     app.error_message = Some("Folder name cannot be empty".to_string());
                 } else {
@@ -148,5 +178,12 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
                 }
             }
         });
+        if let Some(click_time) = app.save_feedback_time {
+            if click_time.elapsed().as_secs_f32() < 2.0 {
+                ui.colored_label(egui::Color32::GREEN, "Saved");
+            } else {
+                app.save_feedback_time = None;
+            }
+        }
     }
 }

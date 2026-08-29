@@ -365,17 +365,22 @@ impl PresetManager {
         }
     }
 
+    /// Replace a preset's folder name in the enabled list (after a folder rename).
+    pub fn rename_enabled_preset(&mut self, old_name: &str, new_name: &str) {
+        if let Some(pos) = self.enabled_presets.iter().position(|e| e == old_name) {
+            self.enabled_presets[pos] = new_name.to_string();
+            self.save_enabled_presets();
+        }
+    }
+
     /// Import a preset from a zip file. Expects a folder at the root of the zip.
-    /// Works with zips that have explicit directory entries and with zips that
-    /// only have file entries (e.g. made by Windows Explorer). If a preset with
-    /// the same folder name already exists it is replaced, so older versions of
-    /// a pack can be re-imported to update it.
+    /// Works with zips that have explicit directory entries and with zips that only have file entries (e.g. made by Windows Explorer).
+    /// If a preset with the same folder name already exists it is replaced, so older versions of a pack can be re-imported to update it.
     pub fn import_preset(&mut self, zip_path: &Path) -> Result<(), String> {
         let file = File::open(zip_path).map_err(|e| e.to_string())?;
         let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
 
-        // Derive the top-level folder from the first entry's path, so zips
-        // without explicit directory entries (Windows Explorer style) import too.
+        // Derive the top-level folder from the first entry's path, so zips without explicit directory entries (Windows Explorer style) import too.
         let mut folder_name = String::new();
         for i in 0..archive.len() {
             let entry = archive.by_index(i).map_err(|e| e.to_string())?;
@@ -429,14 +434,11 @@ impl PresetManager {
             }
         }
 
-        // Stamp the current editor version so presets exported by an older
-        // editor are treated as current format from here on.
+        // Stamp the current editor version so presets exported by an older editor are treated as current format from here on.
         if let Some(preset) = self.read_preset(&folder_name) {
             let _ = self.save_preset_meta(&folder_name, &preset.meta);
 
-            // Old editor zips use a user-defined folder; move the preset to its
-            // GUID name, replacing any existing preset with the same identity so
-            // re-importing an older version updates it.
+            // Old editor zips use a user-defined folder; move the preset to its GUID name, replacing any existing preset with the same identity so re-importing an older version updates it.
             if !preset.meta.folder_override {
                 let guid = guid_folder_name(&preset.meta);
                 if guid != folder_name {
@@ -546,8 +548,8 @@ impl PresetManager {
         &self.presets_dir
     }
 
-    /// Save metadata for an installed preset. Always stamps the current editor
-    /// version so the save format can be checked in the future.
+    /// Save metadata for an installed preset.
+    /// Always stamps the current editor version so the save format can be checked in the future.
     pub fn save_preset_meta(&self, folder_name: &str, meta: &PresetMeta) -> Result<(), String> {
         let mut stamped = meta.clone();
         stamped.editor_version = Some(env!("CARGO_PKG_VERSION").to_string());
@@ -724,6 +726,33 @@ mod tests {
             .map(|p| p.folder_name.clone())
             .collect();
         assert_eq!(names, vec![guid]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn vanilla_preset_regenerates() {
+        let dir = std::env::temp_dir().join(format!("sas2-vanilla-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("test.cfg"), "[General]\nenabledPresets = \n").unwrap();
+
+        let mut manager = PresetManager {
+            presets_dir: dir.join("presets"),
+            cfg_path: Some(dir.join("test.cfg")),
+            enabled_presets: Vec::new(),
+            installed_presets: Vec::new(),
+            vanilla_data: None,
+        };
+        manager.set_vanilla_data(b"vanilla-loot".to_vec());
+
+        let vanilla_dir = dir.join("presets/Vanilla (Base)");
+        assert!(vanilla_dir.join("preset.json").exists());
+        assert!(vanilla_dir.join("loot.zls").exists());
+        assert_eq!(
+            fs::read(vanilla_dir.join("loot.zls")).unwrap(),
+            b"vanilla-loot"
+        );
+        assert!(manager.enabled_presets.contains(&"Vanilla (Base)".to_string()));
         let _ = fs::remove_dir_all(&dir);
     }
 

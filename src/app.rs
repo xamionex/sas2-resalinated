@@ -4,7 +4,7 @@ use crate::config::{
     default_drag_sensitivity, default_item_font_size, default_item_icon_size, ResalinatedConfig,
 };
 use crate::magic_slot::MagicSlotOverrides;
-use crate::preset::{PresetManager, PresetMeta};
+use crate::preset::{guid_folder_name, PresetManager, PresetMeta};
 use crate::tabs::{animations, images, items, manager, monsters, preset_info, textures, Tab};
 use eframe::egui;
 use rfd::FileDialog;
@@ -72,8 +72,7 @@ pub struct ResalinatedApp {
     /// Items the user marked as sold in the craft/equipment menu (item name -> optional flag).
     /// Independent of shop_additions. Written to craft_additions.txt on apply.
     pub craft_additions: HashMap<String, String>,
-    /// Disabled loot/monster names. Disabled entries stay in the working catalog (so they can be
-    /// re-enabled) but are excluded from the exported catalog the game loads.
+    /// Disabled loot/monster names. Disabled entries stay in the working catalog (so they can be re-enabled) but are excluded from the exported catalog the game loads.
     pub loot_disabled: HashSet<String>,
     pub monster_disabled: HashSet<String>,
     // Preset Info tab
@@ -86,6 +85,8 @@ pub struct ResalinatedApp {
     pub manager_selected_enabled: Option<usize>,
     pub error_message: Option<String>,
     pub confirm_overwrite_folder: Option<String>,
+    /// When set, the Preset Info tab shows a green "Saved" feedback for 2 seconds.
+    pub save_feedback_time: Option<std::time::Instant>,
     pub show_only_changed_items: bool,
     pub apply_feedback_time: Option<std::time::Instant>,
     // Monsters tab
@@ -154,6 +155,7 @@ impl Default for ResalinatedApp {
             manager_selected_enabled: None,
             error_message: None,
             confirm_overwrite_folder: None,
+            save_feedback_time: None,
             show_only_changed_items: false,
             apply_feedback_time: None,
             vanilla_monster_catalog: None,
@@ -204,6 +206,13 @@ impl ResalinatedApp {
                 self.vanilla_catalog = Some(cat.clone());
                 self.working_catalog = Some(cat.clone());
                 self.catalog_error = None;
+                // Regenerate the vanilla preset from the game's loot data so it's recreated even if its folder was deleted.
+                if let Ok(data) =
+                    std::fs::read(game_path.join("Loot").join("data").join("loot.zls"))
+                {
+                    self.vanilla_data = Some(data.clone());
+                    self.preset_manager.set_vanilla_data(data);
+                }
             }
             Err(e) => {
                 self.vanilla_catalog = None;
@@ -285,10 +294,8 @@ impl ResalinatedApp {
         self.image_editor = crate::image_editor::ImageEditor::default();
     }
 
-    /// Merge every enabled preset's assets into the live config the loader reads. Disabled presets'
-    /// assets are dropped (the config asset dirs are cleared first). Textures/char-defs/icons are
-    /// copied last-wins; master.zcm is merged per entry against vanilla; the custom icon atlas is
-    /// composited.
+    /// Merge every enabled preset's assets into the live config the loader reads. Disabled presets' assets are dropped (the config asset dirs are cleared first).
+    /// Textures/char-defs/icons are copied last-wins; master.zcm is merged per entry against vanilla; the custom icon atlas is composited.
     fn merge_assets_to_config(&mut self) {
         let Some(gp) = self.game_path.clone() else {
             return;
@@ -430,10 +437,8 @@ impl ResalinatedApp {
             .ok_or("No vanilla catalog loaded")?;
         let mut merged = vanilla.clone(); // now works: LootCatalog is Clone
 
-        // Names that exist in vanilla. A preset def whose name matches one of these is a deliberate
-        // modification of that vanilla item (replace). A preset def with a brand-new name that
-        // clashes with a new item from an earlier preset is an accidental collision, which we
-        // dedup by renaming the later one (and fixing its in-preset token_loot references).
+        // Names that exist in vanilla. A preset def whose name matches one of these is a deliberate modification of that vanilla item (replace).
+        // A preset def with a brand-new name that clashes with a new item from an earlier preset is an accidental collision, which we dedup by renaming the later one (and fixing its in-preset token_loot references).
         let vanilla_names: HashSet<String> =
             vanilla.loot_defs.iter().map(|d| d.name.clone()).collect();
         let mut used_names: HashSet<String> =
@@ -447,10 +452,9 @@ impl ResalinatedApp {
                 let mut preset = LootCatalog::load_from_bytes(&preset_data)
                     .map_err(|e| format!("Failed to parse preset '{}': {}", folder_name, e))?;
 
-                // Pass 1: compute the final name for each def by index. Vanilla-name defs are
-                // modifications (keep name). New-name defs that clash with an already-used name get
-                // a unique name. Indexing by position (not by name) means even a preset that
-                // contains two identically named new items keeps both instead of collapsing them.
+                // Pass 1: compute the final name for each def by index.
+                // Vanilla-name defs are modifications (keep name). New-name defs that clash with an already-used name get a unique name.
+                // Indexing by position (not by name) means even a preset that contains two identically named new items keeps both instead of collapsing them.
                 let mut final_names: Vec<String> = Vec::with_capacity(preset.loot_defs.len());
                 let mut rename: HashMap<String, String> = HashMap::new();
                 for def in &preset.loot_defs {
@@ -732,6 +736,42 @@ impl ResalinatedApp {
         self.preset_manager.save_preset_meta(folder_name, &meta)?;
         self.preset_manager.refresh();
         Ok(())
+    }
+
+    /// Save the currently edited preset in place. If the author/name/version
+    /// changed, the folder is moved to the new GUID name (the old folder is
+    /// removed) and the enabled list is updated. Returns the final folder name.
+    pub fn save_preset_in_place(&mut self) -> Result<String, String> {
+        let old_folder = self.edit_folder_name.clone();
+        if old_folder.is_empty() {
+            return Err("No preset loaded".to_string());
+        }
+        let meta = self.edit_meta.clone();
+        let new_folder = if self.folder_override_enabled {
+            self.edit_folder_name.clone()
+        } else {
+            guid_folder_name(&meta)
+        };
+        if new_folder.is_empty() {
+            return Err("Folder name cannot be empty".to_string());
+        }
+
+        if new_folder != old_folder {
+            // Identity changed: move the folder to the new name, replacing any
+            // preset that already occupies it.
+            let old_dir = self.preset_manager.presets_dir().join(&old_folder);
+            let new_dir = self.preset_manager.presets_dir().join(&new_folder);
+            if new_dir.exists() {
+                std::fs::remove_dir_all(&new_dir).map_err(|e| e.to_string())?;
+            }
+            std::fs::rename(&old_dir, &new_dir).map_err(|e| e.to_string())?;
+            self.preset_manager
+                .rename_enabled_preset(&old_folder, &new_folder);
+        }
+
+        self.save_preset(&new_folder, meta)?;
+        self.edit_folder_name = new_folder.clone();
+        Ok(new_folder)
     }
 
     pub(crate) fn apply_enabled_presets(&mut self) {
