@@ -366,16 +366,24 @@ impl PresetManager {
     }
 
     /// Import a preset from a zip file. Expects a folder at the root of the zip.
+    /// Works with zips that have explicit directory entries and with zips that
+    /// only have file entries (e.g. made by Windows Explorer). If a preset with
+    /// the same folder name already exists it is replaced, so older versions of
+    /// a pack can be re-imported to update it.
     pub fn import_preset(&mut self, zip_path: &Path) -> Result<(), String> {
         let file = File::open(zip_path).map_err(|e| e.to_string())?;
         let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
 
-        // Find the common prefix (top-level folder)
+        // Derive the top-level folder from the first entry's path, so zips
+        // without explicit directory entries (Windows Explorer style) import too.
         let mut folder_name = String::new();
         for i in 0..archive.len() {
             let entry = archive.by_index(i).map_err(|e| e.to_string())?;
-            if entry.is_dir() {
-                folder_name = entry.name().unwrap().trim_end_matches('/').to_string();
+            let name = entry.name().map_err(|e| e.to_string())?.to_string();
+            let name = name.trim_end_matches('/').trim_end_matches('\\');
+            let first = name.split(['/', '\\']).next().unwrap_or("");
+            if !first.is_empty() {
+                folder_name = first.to_string();
                 break;
             }
         }
@@ -385,22 +393,29 @@ impl PresetManager {
 
         let dest_dir = self.presets_dir.join(&folder_name);
         if dest_dir.exists() {
-            return Err(format!("Preset '{}' already exists", folder_name));
+            fs::remove_dir_all(&dest_dir).map_err(|e| e.to_string())?;
         }
         fs::create_dir_all(&dest_dir).map_err(|e| e.to_string())?;
 
         // Extract all files inside that folder
         for i in 0..archive.len() {
             let mut entry = archive.by_index(i).map_err(|e| e.to_string())?;
-            let entry_path = entry.name().unwrap().to_string();
-            // Strip the top-level folder name
-            let relative = entry_path
+            let entry_path = entry.name().map_err(|e| e.to_string())?.to_string();
+            // Normalize Windows separators, then strip the top-level folder name.
+            let normalized = entry_path.replace('\\', "/");
+            let relative = normalized
                 .strip_prefix(&folder_name)
-                .unwrap_or(&entry_path)
-                .trim_start_matches('/')
-                .trim_start_matches('\\');
+                .unwrap_or(&normalized)
+                .trim_start_matches('/');
             if relative.is_empty() {
                 continue;
+            }
+            // Reject entries that would escape the preset folder.
+            if relative
+                .split('/')
+                .any(|part| part == ".." || part.contains('\0'))
+            {
+                return Err(format!("Zip entry '{}' has an unsafe path", entry_path));
             }
             let out_path = dest_dir.join(relative);
             if entry.is_dir() {
@@ -411,6 +426,32 @@ impl PresetManager {
                 }
                 let mut outfile = File::create(&out_path).map_err(|e| e.to_string())?;
                 std::io::copy(&mut entry, &mut outfile).map_err(|e| e.to_string())?;
+            }
+        }
+
+        // Stamp the current editor version so presets exported by an older
+        // editor are treated as current format from here on.
+        if let Some(preset) = self.read_preset(&folder_name) {
+            let _ = self.save_preset_meta(&folder_name, &preset.meta);
+
+            // Old editor zips use a user-defined folder; move the preset to its
+            // GUID name, replacing any existing preset with the same identity so
+            // re-importing an older version updates it.
+            if !preset.meta.folder_override {
+                let guid = guid_folder_name(&preset.meta);
+                if guid != folder_name {
+                    let old_dir = self.presets_dir.join(&folder_name);
+                    let guid_dir = self.presets_dir.join(&guid);
+                    if guid_dir.exists() {
+                        fs::remove_dir_all(&guid_dir).map_err(|e| e.to_string())?;
+                    }
+                    fs::rename(&old_dir, &guid_dir).map_err(|e| e.to_string())?;
+                    self.enabled_presets.retain(|e| e != &folder_name);
+                    if !self.enabled_presets.contains(&guid) {
+                        self.enabled_presets.push(guid);
+                    }
+                    self.save_enabled_presets();
+                }
             }
         }
 
@@ -620,6 +661,69 @@ mod tests {
             saved.editor_version.as_deref(),
             Some(env!("CARGO_PKG_VERSION"))
         );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn import_old_zip_without_dir_entries() {
+        let dir = std::env::temp_dir().join(format!("sas2-import-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("presets")).unwrap();
+        fs::write(dir.join("test.cfg"), "[General]\nenabledPresets = \n").unwrap();
+
+        let zip_path = dir.join("old.zip");
+        let file = File::create(&zip_path).unwrap();
+        let mut zip = ZipWriter::new(file);
+        let options: FileOptions<'_, '_, ()> =
+            FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        // Windows Explorer style: no explicit directory entries, and the old
+        // app wrote preset.json without editor_version/folder_override.
+        zip.start_file("My Old Preset/preset.json", options).unwrap();
+        zip.write_all(
+            br#"{"name":"Balance","version":"1.0.0","author":"Ska Studios","description":"d"}"#,
+        )
+        .unwrap();
+        zip.start_file("My Old Preset/loot.zls", options).unwrap();
+        zip.write_all(b"lootdata").unwrap();
+        zip.finish().unwrap();
+
+        let mut manager = PresetManager {
+            presets_dir: dir.join("presets"),
+            cfg_path: Some(dir.join("test.cfg")),
+            enabled_presets: Vec::new(),
+            installed_presets: Vec::new(),
+            vanilla_data: None,
+        };
+        manager.import_preset(&zip_path).unwrap();
+
+        // Old user-defined folders are migrated to the GUID name on import.
+        let guid = guid_folder_name(&meta("Ska Studios", "Balance", "1.0.0"));
+        let names: Vec<String> = manager
+            .installed_presets
+            .iter()
+            .map(|p| p.folder_name.clone())
+            .collect();
+        assert_eq!(names, vec![guid.clone()]);
+        assert!(dir.join("presets").join(&guid).join("loot.zls").exists());
+
+        // Imported presets get the current editor version stamped.
+        let saved: PresetMeta = serde_json::from_str(
+            &fs::read_to_string(dir.join("presets").join(&guid).join("preset.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            saved.editor_version.as_deref(),
+            Some(env!("CARGO_PKG_VERSION"))
+        );
+
+        // Re-importing the same preset replaces it instead of erroring.
+        manager.import_preset(&zip_path).unwrap();
+        let names: Vec<String> = manager
+            .installed_presets
+            .iter()
+            .map(|p| p.folder_name.clone())
+            .collect();
+        assert_eq!(names, vec![guid]);
         let _ = fs::remove_dir_all(&dir);
     }
 
