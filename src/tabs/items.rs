@@ -1,5 +1,6 @@
 use crate::app::ResalinatedApp;
 use crate::atlas::ItemAtlas;
+use crate::magic_slot::MagicSlotOverrides;
 use crate::tabs::utils::{field_row, CHANGED_COLOR};
 use eframe::egui;
 use egui::{Response, Ui};
@@ -7,9 +8,10 @@ use sas2_parser::loot_catalog::{LootCatalog, LootDef, LootField, LootFieldValue}
 use sas2_parser::loot_names;
 use std::collections::HashMap;
 
-/// Draw one icon button. Vanilla icons come from the items atlas; an icon at or beyond the vanilla
-/// capacity is a custom icon drawn from the custom-icon atlas. A missing/empty icon renders an
-/// invisible placeholder so grid columns stay aligned.
+/// Draw one icon button.
+/// Vanilla icons come from the items atlas
+/// An icon at or beyond the vanilla capacity is a custom icon drawn from the custom-icon atlas.
+/// A missing/empty icon renders an invisible placeholder so grid columns stay aligned.
 pub fn draw_image_button(
     ui: &mut Ui,
     atlas: Option<&ItemAtlas>,
@@ -43,11 +45,16 @@ pub fn draw_image_button(
     }
 }
 
-/// Render a word-wrapped item name.
-pub fn add_item_label(ui: &mut Ui, title: &str, font_size: f32) {
+/// Render a word-wrapped item name. When `selected`, the name is green.
+pub fn add_item_label(ui: &mut Ui, title: &str, font_size: f32, selected: bool) {
+    let color = if selected {
+        egui::Color32::LIGHT_GREEN
+    } else {
+        ui.visuals().text_color()
+    };
     for word in title.split_whitespace() {
         ui.add(
-            egui::Label::new(egui::RichText::new(word).size(font_size))
+            egui::Label::new(egui::RichText::new(word).size(font_size).color(color))
                 .wrap_mode(egui::TextWrapMode::Truncate)
                 .halign(egui::Align::Center)
                 .show_tooltip_when_elided(false),
@@ -99,9 +106,8 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
     // Sort by display text (second element)
     magic_items.sort_by(|a, b| a.1.cmp(&b.1));
 
-    // Candidates for "Copy logic from": (name, display, type, subtype) for every item, so the
-    // editor can offer same-type items to copy fields/flags from (e.g. give a new weapon the
-    // logic of an existing zweihander).
+    // Candidates for "Copy logic from": (name, display, type, subtype) for every item, so the editor can offer same-type items to copy fields/flags from
+    // (e.g. give a new weapon the logic of an existing zweihander).
     let copy_candidates: Vec<(String, String, i32, i32)> = app
         .working_catalog
         .as_ref()
@@ -192,8 +198,8 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
                 clone_selected_item(app);
             }
 
-            // Disable (reversible) / Enable / Delete. Vanilla items can only be disabled; a
-            // non-vanilla item must be disabled first, after which Delete (permanent) appears.
+            // Disable (reversible) / Enable / Delete.
+            // Vanilla items can only be disabled, a non-vanilla item must be disabled first, after which Delete (permanent) appears.
             let sel = app.selected_item_idx.and_then(|idx| {
                 app.working_catalog
                     .as_ref()
@@ -315,7 +321,12 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
                                     .filter(|t| !t.is_empty())
                                     .cloned()
                                     .unwrap_or_else(|| def.name.clone());
-                                add_item_label(ui, &display_name, app.config.item_font_size);
+                                add_item_label(
+                                    ui,
+                                    &display_name,
+                                    app.config.item_font_size,
+                                    app.selected_item_idx == Some(*orig_idx),
+                                );
                                 if app.loot_disabled.contains(&def.name) {
                                     ui.label(
                                         egui::RichText::new("(disabled)")
@@ -393,8 +404,8 @@ fn create_blank_item(app: &mut ResalinatedApp) {
     add_item(app, def);
 }
 
-/// Remove the selected item from the working catalog and reindex. Vanilla items removed here are
-/// recorded as deletions when the preset is saved, so they also drop out of the applied catalog.
+/// Remove the selected item from the working catalog and reindex.
+/// Vanilla items removed here are recorded as deletions when the preset is saved, so they also drop out of the applied catalog.
 fn delete_selected_item(app: &mut ResalinatedApp) {
     let Some(idx) = app.selected_item_idx else {
         return;
@@ -445,8 +456,7 @@ fn clone_selected_item(app: &mut ResalinatedApp) {
     add_item(app, new_def);
 }
 
-/// One multiplier row (1.0 = vanilla) for magic cost/cooldown, colored when non-default, with a
-/// reset-to-1.0 button.
+/// One multiplier row (1.0 = vanilla) for magic cost/cooldown, colored when non-default, with a reset-to-1.0 button.
 fn magic_mul_row(ui: &mut Ui, label: &str, value: &mut f32, speed: f32) {
     let changed = (*value - 1.0).abs() > 0.001;
     let label_rich = if changed {
@@ -474,8 +484,8 @@ fn default_field_value(v: &LootFieldValue) -> LootFieldValue {
     }
 }
 
-/// The canonical field set for a loot type, taken from the vanilla item of that type with the most
-/// fields. Values are reset to defaults; ids and data types are preserved.
+/// The canonical field set for a loot type, taken from the vanilla item of that type with the most fields.
+/// Values are reset to defaults; ids and data types are preserved.
 fn type_field_template(vanilla: Option<&LootCatalog>, type_: i32) -> Vec<LootField> {
     let Some(v) = vanilla else {
         return Vec::new();
@@ -533,6 +543,156 @@ fn apply_copy_logic(app: &mut ResalinatedApp, idx: usize, src_name: &str) {
             }
         }
     }
+}
+
+/// The magic slot field ids on weapons (X / Y / B).
+const MAGIC_SLOT_IDS: [i32; 3] = [14, 15, 16];
+
+/// Copy the magic state (slot fields + per-slot multipliers) of `def` into the magic clipboard.
+fn copy_magic_from_def(
+    def: &LootDef,
+    overrides: &HashMap<String, HashMap<i32, MagicSlotOverrides>>,
+    clipboard: &mut crate::magic_slot::MagicClipboard,
+) {
+    let mut fields: Vec<LootField> = Vec::new();
+    for f in &def.fields {
+        if MAGIC_SLOT_IDS.contains(&f.id) {
+            fields.push(f.clone());
+        }
+    }
+    let slot_overrides = overrides.get(&def.name).cloned().unwrap_or_default();
+    let source = def
+        .title
+        .first()
+        .filter(|t| !t.is_empty())
+        .cloned()
+        .unwrap_or_else(|| def.name.clone());
+    *clipboard = crate::magic_slot::MagicClipboard {
+        fields,
+        overrides: slot_overrides,
+        source: Some(source),
+    };
+}
+
+/// Apply the magic clipboard to `def`: replaces the magic slot fields and the
+/// per-slot multipliers.
+fn paste_magic_to_def(
+    def: &mut LootDef,
+    clip: &crate::magic_slot::MagicClipboard,
+    overrides: &mut HashMap<String, HashMap<i32, MagicSlotOverrides>>,
+) {
+    let weapon_name = def.name.clone();
+    for f in &mut def.fields {
+        if MAGIC_SLOT_IDS.contains(&f.id) {
+            if let Some(src) = clip.fields.iter().find(|sf| sf.id == f.id) {
+                f.value = src.value.clone();
+            }
+        }
+    }
+    let slot_overrides = overrides.entry(weapon_name).or_default();
+    for slot_id in MAGIC_SLOT_IDS {
+        if let Some(src) = clip.overrides.get(&slot_id) {
+            slot_overrides.insert(slot_id, src.clone());
+        }
+    }
+}
+
+/// Reset all magic on `def` to vanilla: slot fields get the vanilla values and the per-slot multipliers are cleared.
+fn default_magic_on_def(
+    def: &mut LootDef,
+    vanilla: Option<&LootDef>,
+    overrides: &mut HashMap<String, HashMap<i32, MagicSlotOverrides>>,
+) {
+    let weapon_name = def.name.clone();
+    let vanilla_fields: Vec<LootField> = vanilla
+        .map(|vd| {
+            vd.fields
+                .iter()
+                .filter(|f| MAGIC_SLOT_IDS.contains(&f.id))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    for f in &mut def.fields {
+        if MAGIC_SLOT_IDS.contains(&f.id) {
+            if let Some(vf) = vanilla_fields.iter().find(|vf| vf.id == f.id) {
+                f.value = vf.value.clone();
+            }
+        }
+    }
+    overrides.remove(&weapon_name);
+}
+
+/// Copy the magic state of the item at `src_idx` into the app's magic clipboard.
+fn copy_magic_from(app: &mut ResalinatedApp, src_idx: usize) {
+    let Some(cat) = app.working_catalog.as_ref() else {
+        return;
+    };
+    let Some(src) = cat.loot_defs.get(src_idx) else {
+        return;
+    };
+    copy_magic_from_def(src, &app.magic_slot_overrides, &mut app.magic_clipboard);
+}
+
+/// Apply the magic clipboard to the item at `idx`.
+fn paste_magic_to(app: &mut ResalinatedApp, idx: usize) {
+    let clip = app.magic_clipboard.clone();
+    let Some(cat) = app.working_catalog.as_mut() else {
+        return;
+    };
+    let Some(def) = cat.loot_defs.get_mut(idx) else {
+        return;
+    };
+    paste_magic_to_def(def, &clip, &mut app.magic_slot_overrides);
+}
+
+/// Copy the flags of `def` into the flags clipboard.
+fn copy_flags_from_def(def: &LootDef, clipboard: &mut Option<crate::magic_slot::FlagsClipboard>) {
+    let source = def
+        .title
+        .first()
+        .filter(|t| !t.is_empty())
+        .cloned()
+        .unwrap_or_else(|| def.name.clone());
+    *clipboard = Some(crate::magic_slot::FlagsClipboard {
+        flags: def.flags.clone(),
+        source: Some(source),
+    });
+}
+
+/// Apply the flags clipboard to `def`.
+fn paste_flags_to_def(def: &mut LootDef, clip: &crate::magic_slot::FlagsClipboard) {
+    def.flags = clip.flags.clone();
+}
+
+/// Reset all flags on `def` to vanilla.
+fn default_flags_on_def(def: &mut LootDef, vanilla: Option<&LootDef>) {
+    def.flags = vanilla.map(|v| v.flags.clone()).unwrap_or_default();
+}
+
+/// Copy the flags of the item at `src_idx` into the flags clipboard.
+fn copy_flags_from(app: &mut ResalinatedApp, src_idx: usize) {
+    let Some(cat) = app.working_catalog.as_ref() else {
+        return;
+    };
+    let Some(src) = cat.loot_defs.get(src_idx) else {
+        return;
+    };
+    copy_flags_from_def(src, &mut app.flags_clipboard);
+}
+
+/// Apply the flags clipboard to the item at `idx`.
+fn paste_flags_to(app: &mut ResalinatedApp, idx: usize) {
+    let Some(clip) = app.flags_clipboard.clone() else {
+        return;
+    };
+    let Some(cat) = app.working_catalog.as_mut() else {
+        return;
+    };
+    let Some(def) = cat.loot_defs.get_mut(idx) else {
+        return;
+    };
+    paste_flags_to_def(def, &clip);
 }
 
 /// 'magic_items': (internal_name, display_title) pairs for all magic-type items in the catalog.
@@ -696,37 +856,6 @@ fn show_lootdef_editor(
                 },
             );
 
-            // Shops: make this item buyable. New items have no in-game source otherwise; this is
-            // how a created/cloned item becomes obtainable. Shops are NPC-dialog driven and can't
-            // be enumerated, so the entry is added to every merchant (optionally flag-gated).
-            ui.collapsing("Shops", |ui| {
-                let name = def.name.clone();
-                let mut sell = app.shop_additions.contains_key(&name);
-                if ui
-                    .checkbox(&mut sell, "Sell in shops (all merchants)")
-                    .changed()
-                {
-                    if sell {
-                        app.shop_additions.entry(name.clone()).or_default();
-                    } else {
-                        app.shop_additions.remove(&name);
-                    }
-                }
-                if let Some(flag) = app.shop_additions.get_mut(&name) {
-                    ui.horizontal(|ui| {
-                        ui.label("Require flag (optional):");
-                        ui.text_edit_singleline(flag);
-                    });
-                    ui.label(
-                        egui::RichText::new(
-                            "Empty flag = always for sale. Applies after Apply Changes.",
-                        )
-                        .small()
-                        .weak(),
-                    );
-                }
-            });
-
             // Craft / equipment menu: independent of Shops. Adds this item to crafting menus.
             ui.collapsing("Craft / Equipment menu", |ui| {
                 let name = def.name.clone();
@@ -773,6 +902,30 @@ fn show_lootdef_editor(
                     if let Some(v) = &vanilla {
                         if (cost - v.cost).abs() > 0.001 && ui.button("↺").clicked() {
                             def.cost = v.cost;
+                        }
+                    }
+                },
+            );
+
+            field_row(
+                ui,
+                "Token Cost:",
+                vanilla
+                    .as_ref()
+                    .map(|v| def.token_cost != v.token_cost)
+                    .unwrap_or(true),
+                |ui| {
+                    ui.add(egui::DragValue::new(&mut def.token_cost));
+                    ui.label(
+                        egui::RichText::new(
+                            "When > 0, the item costs this many tokens instead of silver.",
+                        )
+                        .small()
+                        .weak(),
+                    );
+                    if let Some(v) = &vanilla {
+                        if def.token_cost != v.token_cost && ui.button("↺").clicked() {
+                            def.token_cost = v.token_cost;
                         }
                     }
                 },
@@ -855,6 +1008,52 @@ fn show_lootdef_editor(
 
             // Numeric / String Fields
             ui.collapsing(format!("Fields ({})", def.fields.len()), |ui| {
+                // Magic helpers: only meaningful for weapons (type 1) with magic slots.
+                let is_weapon = def.type_ == 1;
+                let has_magic_slots = def.fields.iter().any(|f| MAGIC_SLOT_IDS.contains(&f.id));
+                if is_weapon && has_magic_slots {
+                    ui.horizontal(|ui| {
+                        if ui
+                            .button("Default magic")
+                            .on_hover_text("Set all magic on this item back to vanilla")
+                            .clicked()
+                        {
+                            default_magic_on_def(def, vanilla.as_ref(), &mut app.magic_slot_overrides);
+                        }
+                        if ui
+                            .button("Copy magic (pick)")
+                            .on_hover_text("Open the item picker, then copy the selected item's magic onto this item")
+                            .clicked()
+                        {
+                            app.magic_copy_picker_open = true;
+                            app.copy_picker_search.clear();
+                            app.copy_picker_focus = true;
+                        }
+                        if ui
+                            .button("Copy magic")
+                            .on_hover_text("Copy this item's magic to the clipboard")
+                            .clicked()
+                        {
+                            copy_magic_from_def(def, &app.magic_slot_overrides, &mut app.magic_clipboard);
+                        }
+                        let has_clip = !app.magic_clipboard.fields.is_empty()
+                            || !app.magic_clipboard.overrides.is_empty();
+                        let paste_resp = ui.add_enabled(has_clip, egui::Button::new("Paste magic"));
+                        let paste_hover = if has_clip {
+                            match &app.magic_clipboard.source {
+                                Some(s) => format!("Apply the copied magic (from {}) to this item", s),
+                                None => "Apply the copied magic to this item".to_string(),
+                            }
+                        } else {
+                            "Copy magic first".to_string()
+                        };
+                        if paste_resp.on_hover_text(paste_hover).clicked() {
+                            paste_magic_to_def(def, &app.magic_clipboard, &mut app.magic_slot_overrides);
+                        }
+                    });
+                    ui.separator();
+                }
+
                 // Copy logic (fields + flags) from another item, to give a new item working logic.
                 if ui
                     .button("Copy logic from...")
@@ -1037,23 +1236,67 @@ fn show_lootdef_editor(
 
             // Flags
             let flag_count = loot_names::get_loot_flag_count(def.type_);
-            ui.collapsing(
-                format!("Flags ({} active / {} total)", def.flags.len(), flag_count),
-                |ui| {
-                    egui::ScrollArea::vertical()
-                        .max_height(360.0)
-                        .show(ui, |ui| {
-                            show_flag_checkboxes(
-                                ui,
-                                &mut def.flags,
-                                flag_count,
-                                def.type_,
-                                vanilla.as_ref().map(|v| &v.flags),
-                                loot_names::get_flag_name,
-                            );
-                        });
-                },
-            );
+            egui::CollapsingHeader::new(format!(
+                "Flags ({} active / {} total)",
+                def.flags.len(),
+                flag_count
+            ))
+            .id_salt(("item_flags", idx))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    if ui
+                        .button("Default flags")
+                        .on_hover_text("Set all flags on this item back to vanilla")
+                        .clicked()
+                    {
+                        default_flags_on_def(def, vanilla.as_ref());
+                    }
+                    if ui
+                        .button("Copy flags (pick)")
+                        .on_hover_text("Open the item picker, then copy the selected item's flags onto this item")
+                        .clicked()
+                    {
+                        app.flags_copy_picker_open = true;
+                        app.copy_picker_search.clear();
+                        app.copy_picker_focus = true;
+                    }
+                    if ui
+                        .button("Copy flags")
+                        .on_hover_text("Copy this item's flags to the clipboard")
+                        .clicked()
+                    {
+                        copy_flags_from_def(def, &mut app.flags_clipboard);
+                    }
+                    let has_clip = app.flags_clipboard.is_some();
+                    let paste_resp = ui.add_enabled(has_clip, egui::Button::new("Paste flags"));
+                    let paste_hover = if has_clip {
+                        match &app.flags_clipboard.as_ref().unwrap().source {
+                            Some(s) => format!("Apply the copied flags (from {}) to this item", s),
+                            None => "Apply the copied flags to this item".to_string(),
+                        }
+                    } else {
+                        "Copy flags first".to_string()
+                    };
+                    if paste_resp.on_hover_text(paste_hover).clicked() {
+                        if let Some(clip) = &app.flags_clipboard {
+                            paste_flags_to_def(def, clip);
+                        }
+                    }
+                });
+                ui.separator();
+                egui::ScrollArea::vertical()
+                    .max_height(360.0)
+                    .show(ui, |ui| {
+                        show_flag_checkboxes(
+                            ui,
+                            &mut def.flags,
+                            flag_count,
+                            def.type_,
+                            vanilla.as_ref().map(|v| &v.flags),
+                            loot_names::get_flag_name,
+                        );
+                    });
+            });
         });
 
     // "Copy logic from" picker: a searchable popup of same-type items (def borrow released here).
@@ -1118,6 +1361,143 @@ fn show_lootdef_editor(
         }
     }
 
+    // "Copy magic (pick)" picker: same list as copy logic, but copies only the
+    // magic state (slot fields + multipliers) instead of the full logic.
+    if app.magic_copy_picker_open {
+        let mut chosen: Option<String> = None;
+        let mut open = app.magic_copy_picker_open;
+        egui::Window::new("Copy magic from")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .open(&mut open)
+            .show(ui.ctx(), |ui| {
+                ui.set_width(320.0);
+                ui.label(format!(
+                    "Weapons of type {} ({})",
+                    selected_type,
+                    loot_names::get_type_name(selected_type)
+                ));
+                ui.horizontal(|ui| {
+                    ui.label("🔍");
+                    let resp = ui.text_edit_singleline(&mut app.copy_picker_search);
+                    if app.copy_picker_focus {
+                        resp.request_focus();
+                        app.copy_picker_focus = false;
+                    }
+                });
+                ui.separator();
+
+                let needle = app.copy_picker_search.to_lowercase();
+                let mut matches: Vec<&(String, String, i32, i32)> = copy_candidates
+                    .iter()
+                    .filter(|(n, disp, t, _)| {
+                        *t == selected_type
+                            && n != &selected_name
+                            && (needle.is_empty()
+                                || n.to_lowercase().contains(&needle)
+                                || disp.to_lowercase().contains(&needle))
+                    })
+                    .collect();
+                matches.sort_by_key(|(_, _, _, st)| (*st != selected_sub) as i32);
+
+                egui::ScrollArea::vertical()
+                    .max_height(400.0)
+                    .show(ui, |ui| {
+                        for (n, disp, _, st) in matches {
+                            let label = if *st == selected_sub {
+                                format!("{} ({})", disp, n)
+                            } else {
+                                format!("{} ({}) [sub {}]", disp, n, st)
+                            };
+                            if ui.selectable_label(false, label).clicked() {
+                                chosen = Some(n.clone());
+                            }
+                        }
+                    });
+            });
+        app.magic_copy_picker_open = open;
+        if let Some(src_name) = chosen {
+            if let Some(src_idx) = app
+                .working_catalog
+                .as_ref()
+                .and_then(|c| c.by_name.get(&src_name).copied())
+            {
+                copy_magic_from(app, src_idx as usize);
+                paste_magic_to(app, idx);
+            }
+            app.magic_copy_picker_open = false;
+        }
+    }
+
+    // "Copy flags (pick)" picker: same list as copy logic, but copies only the flags instead of the full logic.
+    if app.flags_copy_picker_open {
+        let mut chosen: Option<String> = None;
+        let mut open = app.flags_copy_picker_open;
+        egui::Window::new("Copy flags from")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .open(&mut open)
+            .show(ui.ctx(), |ui| {
+                ui.set_width(320.0);
+                ui.label(format!(
+                    "Items of type {} ({})",
+                    selected_type,
+                    loot_names::get_type_name(selected_type)
+                ));
+                ui.horizontal(|ui| {
+                    ui.label("🔍");
+                    let resp = ui.text_edit_singleline(&mut app.copy_picker_search);
+                    if app.copy_picker_focus {
+                        resp.request_focus();
+                        app.copy_picker_focus = false;
+                    }
+                });
+                ui.separator();
+
+                let needle = app.copy_picker_search.to_lowercase();
+                let mut matches: Vec<&(String, String, i32, i32)> = copy_candidates
+                    .iter()
+                    .filter(|(n, disp, t, _)| {
+                        *t == selected_type
+                            && n != &selected_name
+                            && (needle.is_empty()
+                                || n.to_lowercase().contains(&needle)
+                                || disp.to_lowercase().contains(&needle))
+                    })
+                    .collect();
+                matches.sort_by_key(|(_, _, _, st)| (*st != selected_sub) as i32);
+
+                egui::ScrollArea::vertical()
+                    .max_height(400.0)
+                    .show(ui, |ui| {
+                        for (n, disp, _, st) in matches {
+                            let label = if *st == selected_sub {
+                                format!("{} ({})", disp, n)
+                            } else {
+                                format!("{} ({}) [sub {}]", disp, n, st)
+                            };
+                            if ui.selectable_label(false, label).clicked() {
+                                chosen = Some(n.clone());
+                            }
+                        }
+                    });
+            });
+        app.flags_copy_picker_open = open;
+        if let Some(src_name) = chosen {
+            if let Some(src_idx) = app
+                .working_catalog
+                .as_ref()
+                .and_then(|c| c.by_name.get(&src_name).copied())
+            {
+                copy_flags_from(app, src_idx as usize);
+                paste_flags_to(app, idx);
+            }
+            app.flags_copy_picker_open = false;
+        }
+    }
+
     // Vanilla icon picker: searchable grid of the game's item icons.
     if app.vanilla_icon_picker_open {
         let mut open = app.vanilla_icon_picker_open;
@@ -1166,7 +1546,7 @@ fn show_lootdef_editor(
                                     if clicked {
                                         chosen_img = Some(*img);
                                     }
-                                    add_item_label(ui, label, 10.0);
+                                    add_item_label(ui, label, 10.0, false);
                                 });
                                 col += 1;
                                 if col % 5 == 0 {

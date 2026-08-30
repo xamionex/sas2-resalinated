@@ -34,8 +34,8 @@ fn add_monster(app: &mut ResalinatedApp, def: MonsterDef) {
     }
 }
 
-/// Create a blank monster. Title/description keep exactly 20 slots so the binary layout stays
-/// valid; everything else starts neutral and is filled in via the editor.
+/// Create a blank monster.
+/// Title/description keep exactly 20 slots so the binary layout stays valid; everything else starts neutral and is filled in via the editor.
 fn create_blank_monster(app: &mut ResalinatedApp) {
     let name = app
         .working_monster_catalog
@@ -111,10 +111,15 @@ fn clone_selected_monster(app: &mut ResalinatedApp) {
     add_monster(app, new_def);
 }
 
-fn add_monster_label(ui: &mut Ui, title: &str, font_size: f32) {
+fn add_monster_label(ui: &mut Ui, title: &str, font_size: f32, selected: bool) {
+    let color = if selected {
+        egui::Color32::LIGHT_GREEN
+    } else {
+        ui.visuals().text_color()
+    };
     for word in title.split_whitespace() {
         ui.add(
-            egui::Label::new(egui::RichText::new(word).size(font_size))
+            egui::Label::new(egui::RichText::new(word).size(font_size).color(color))
                 .wrap_mode(egui::TextWrapMode::Truncate)
                 .halign(egui::Align::Center)
                 .show_tooltip_when_elided(false),
@@ -157,8 +162,7 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
         .unwrap_or_default();
     let mut request_copy_picker = false;
 
-    // Assemble the selected monster's sprite (with origin) for the hitbox overlay, before the
-    // detail panel borrows the catalog mutably.
+    // Assemble the selected monster's sprite (with origin) for the hitbox overlay, before the detail panel borrows the catalog mutably.
     let hitbox_preview: Option<HitboxPreview> = app.selected_monster_idx.and_then(|idx| {
         let names = app
             .working_monster_catalog
@@ -470,7 +474,12 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
                                     .filter(|t| !t.is_empty())
                                     .cloned()
                                     .unwrap_or_else(|| def.name.clone());
-                                add_monster_label(ui, &display_name, app.config.item_font_size);
+                                add_monster_label(
+                                    ui,
+                                    &display_name,
+                                    app.config.item_font_size,
+                                    app.selected_monster_idx == Some(*orig_idx),
+                                );
                                 if app.monster_disabled.contains(&def.name) {
                                     ui.label(
                                         egui::RichText::new("(disabled)")
@@ -686,10 +695,9 @@ fn show_monsterdef_editor(
                 },
             );
 
-            // Hitbox (the damage-receiving box). Per the game's HitPoint.CheckPoint, a hit lands
-            // when the attack point is within [origin.X - boxWidth/2, origin.X + boxWidth/2]
-            // horizontally and [origin.Y - boxHeight, origin.Y + boxSubHeight] vertically, where
-            // origin is the monster's ground position. The schematic below shows that box to scale.
+            // Hitbox (the damage-receiving box).
+            // Per the game's HitPoint.CheckPoint, a hit lands when the attack point is within [origin.X - boxWidth/2, origin.X + boxWidth/2] horizontally and [origin.Y - boxHeight, origin.Y + boxSubHeight] vertically, where origin is the monster's ground position.
+            // The schematic below shows that box to scale.
             ui.separator();
             ui.horizontal(|ui| {
                 ui.heading("Hitbox");
@@ -879,12 +887,9 @@ fn show_monsterdef_editor(
         });
 }
 
-/// Draw a to-scale schematic of the monster hurtbox (damage-receiving area) and ground shadow,
-/// with the monster's idle sprite rendered behind it so the box size can be judged against the
-/// actual entity.
+/// Draw a to-scale schematic of the monster hurtbox (damage-receiving area) and ground shadow, with the monster's idle sprite rendered behind it so the box size can be judged against the actual entity.
 ///
-/// Mirrors the in-game box from HitPoint.CheckPoint: horizontally centered on the origin spanning
-/// +/- boxWidth/2, vertically from origin - boxHeight (top) to origin + boxSubHeight (bottom).
+/// Mirrors the in-game box from HitPoint.CheckPoint: horizontally centered on the origin spanning +/- boxWidth/2, vertically from origin - boxHeight (top) to origin + boxSubHeight (bottom).
 /// Both the box and the sprite share the monster's ground origin and the same world-pixel scale.
 fn draw_hurtbox_schematic(ui: &mut Ui, def: &MonsterDef, preview: Option<&HitboxPreview>) {
     use egui::{Color32, Pos2, Rect, Stroke};
@@ -950,7 +955,7 @@ fn draw_hurtbox_schematic(ui: &mut Ui, def: &MonsterDef, preview: Option<&Hitbox
     painter.rect_stroke(
         box_rect,
         0.0,
-        Stroke::new(1.5, Color32::from_rgb(230, 80, 80)),
+        Stroke::new(1.5_f32, Color32::from_rgb(230, 80, 80)),
         egui::StrokeKind::Middle,
     );
 
@@ -959,7 +964,7 @@ fn draw_hurtbox_schematic(ui: &mut Ui, def: &MonsterDef, preview: Option<&Hitbox
         let half = sw * 0.5 * scale;
         painter.line_segment(
             [Pos2::new(cx - half, origin_y), Pos2::new(cx + half, origin_y)],
-            Stroke::new(3.0, Color32::from_rgba_unmultiplied(120, 120, 180, 160)),
+            Stroke::new(3.0_f32, Color32::from_rgba_unmultiplied(120, 120, 180, 160)),
         );
     }
 
@@ -967,10 +972,10 @@ fn draw_hurtbox_schematic(ui: &mut Ui, def: &MonsterDef, preview: Option<&Hitbox
     let oc = Color32::from_rgb(255, 220, 80);
     painter.line_segment(
         [Pos2::new(cx - 5.0, origin_y), Pos2::new(cx + 5.0, origin_y)],
-        Stroke::new(1.5, oc),
+        Stroke::new(1.5_f32, oc),
     );
     painter.line_segment(
         [Pos2::new(cx, origin_y - 5.0), Pos2::new(cx, origin_y + 5.0)],
-        Stroke::new(1.5, oc),
+        Stroke::new(1.5_f32, oc),
     );
 }

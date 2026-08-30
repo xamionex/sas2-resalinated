@@ -174,9 +174,9 @@ fn show_sheet_viewer(app: &mut ResalinatedApp, ui: &mut Ui) {
                 );
                 let selected = te.selected_cell == Some(i);
                 let stroke = if selected {
-                    Stroke::new(2.0, Color32::YELLOW)
+                    Stroke::new(2.0_f32, Color32::YELLOW)
                 } else {
-                    Stroke::new(1.0, Color32::from_rgba_unmultiplied(0, 200, 255, 160))
+                    Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(0, 200, 255, 160))
                 };
                 painter.rect_stroke(cell_rect, 0.0, stroke, egui::StrokeKind::Middle);
 
@@ -184,8 +184,8 @@ fn show_sheet_viewer(app: &mut ResalinatedApp, ui: &mut Ui) {
                 let (ox, oy) = sprite.origin;
                 let op = to_screen(ox, oy);
                 let oc = if selected { Color32::YELLOW } else { Color32::from_rgb(255, 120, 0) };
-                painter.line_segment([op - Vec2::new(4.0, 0.0), op + Vec2::new(4.0, 0.0)], Stroke::new(1.5, oc));
-                painter.line_segment([op - Vec2::new(0.0, 4.0), op + Vec2::new(0.0, 4.0)], Stroke::new(1.5, oc));
+                painter.line_segment([op - Vec2::new(4.0, 0.0), op + Vec2::new(4.0, 0.0)], Stroke::new(1.5_f32, oc));
+                painter.line_segment([op - Vec2::new(0.0, 4.0), op + Vec2::new(0.0, 4.0)], Stroke::new(1.5_f32, oc));
             }
 
             // Click selects the topmost (smallest-area) cell under the pointer.

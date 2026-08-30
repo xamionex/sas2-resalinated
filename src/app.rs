@@ -1,11 +1,13 @@
 use crate::atlas::{ItemAtlas, MonsterTextureCache};
-use crate::catalog::{load_loot_catalog, load_monster_catalog};
+use crate::catalog::{
+    load_dialog_catalog, load_loot_catalog, load_monster_catalog, load_texture_catalog,
+};
 use crate::config::{
     default_drag_sensitivity, default_item_font_size, default_item_icon_size, ResalinatedConfig,
 };
 use crate::magic_slot::MagicSlotOverrides;
 use crate::preset::{guid_folder_name, PresetManager, PresetMeta};
-use crate::tabs::{animations, images, items, manager, monsters, preset_info, textures, Tab};
+use crate::tabs::{animations, images, items, manager, monsters, preset_info, shop, textures, Tab};
 use eframe::egui;
 use rfd::FileDialog;
 use sas2_parser::loot_catalog::LootCatalog;
@@ -54,11 +56,81 @@ fn monster_bytes_excluding(
         .map_err(|e| format!("Serialization error: {}", e))
 }
 
+/// Build a dialog delta: only NPCs whose store scripts differ from vanilla.
+/// Used to persist shop edits inside a preset (shop_edits.zdx).
+fn dialog_delta(
+    vanilla: &sas2_parser::dialog::DialogCatalog,
+    working: &sas2_parser::dialog::DialogCatalog,
+) -> sas2_parser::dialog::DialogCatalog {
+    let mut delta = sas2_parser::dialog::DialogCatalog::default();
+    for npc in &working.npcs {
+        let vanilla_npc = vanilla.find_npc(&npc.name);
+        let changed = match vanilla_npc {
+            Some(v) => {
+                // Compare only the store scripts (the shop-relevant part).
+                let v_scripts: Vec<&str> = v
+                    .nodes
+                    .iter()
+                    .map(|n| n.store_script.as_str())
+                    .collect();
+                let w_scripts: Vec<&str> = npc
+                    .nodes
+                    .iter()
+                    .map(|n| n.store_script.as_str())
+                    .collect();
+                v_scripts != w_scripts
+            }
+            None => true,
+        };
+        if changed {
+            delta.npcs.push(npc.clone());
+        }
+    }
+    delta
+}
+
+/// Merge shop edits from all enabled presets onto the vanilla dialog catalog.
+fn merge_dialog_edits(
+    app: &ResalinatedApp,
+) -> Result<sas2_parser::dialog::DialogCatalog, String> {
+    let vanilla = app
+        .vanilla_dialog
+        .as_ref()
+        .ok_or("No vanilla dialog catalog loaded")?;
+    let mut merged = vanilla.clone();
+    for folder_name in app.preset_manager.enabled_presets() {
+        if folder_name == "Vanilla (Base)" {
+            continue;
+        }
+        if let Some(data) = app.preset_manager.get_preset_file(folder_name, "shop_edits.zdx") {
+            if data.is_empty() {
+                continue;
+            }
+            let delta = sas2_parser::dialog::DialogCatalog::load_from_bytes(&data)
+                .map_err(|e| format!("Failed to parse shop edits in '{}': {}", folder_name, e))?;
+            for npc in delta.npcs {
+                if let Some(existing) = merged.find_npc_mut(&npc.name) {
+                    *existing = npc;
+                } else {
+                    merged.npcs.push(npc);
+                }
+            }
+        }
+    }
+    Ok(merged)
+}
+
 pub struct ResalinatedApp {
     pub config: ResalinatedConfig,
     pub vanilla_data: Option<Vec<u8>>,
     pub vanilla_catalog: Option<LootCatalog>,
     pub working_catalog: Option<LootCatalog>,
+    /// Vanilla dialog catalog (merchant shop scripts). Loaded from Dialog/data/dialog.zdx.
+    pub vanilla_dialog: Option<sas2_parser::dialog::DialogCatalog>,
+    /// Working dialog catalog: vanilla plus any shop edits from the loaded preset.
+    pub working_dialog: Option<sas2_parser::dialog::DialogCatalog>,
+    /// Merchant placements: dialog NPC name -> (map, x, y) from the .zax map files.
+    pub merchant_locations: HashMap<String, (String, f32, f32)>,
     pub game_path: Option<PathBuf>,
     pub preset_manager: PresetManager,
     pub active_tab: Tab,
@@ -106,6 +178,34 @@ pub struct ResalinatedApp {
     pub magic_item_picker_target_slot_id: Option<i32>,
     /// Focus the search field on the first frame a picker window opens.
     pub magic_item_picker_focus: bool,
+    /// Copied magic state for the Paste magic button.
+    pub magic_clipboard: crate::magic_slot::MagicClipboard,
+    /// When true, the "Copy magic" picker copies magic instead of full logic.
+    pub magic_copy_picker_open: bool,
+    /// Copied flags for the Paste flags button.
+    pub flags_clipboard: Option<crate::magic_slot::FlagsClipboard>,
+    /// When true, the "Copy flags" picker copies flags instead of full logic.
+    pub flags_copy_picker_open: bool,
+    // Shop tab
+    pub shop_picker_open: bool,
+    pub shop_picker_search: String,
+    pub shop_picker_focus: bool,
+    pub shop_list_search: String,
+    /// Selected merchant (index into the working dialog's NPC list).
+    pub shop_selected_npc: Option<usize>,
+    /// When true, the "All Shops" pseudo-tab is selected (sell-in-all-shops grid).
+    pub shop_all_shops: bool,
+    pub shop_merchant_search: String,
+    /// Target (npc_idx, node_idx) for the "add item" picker.
+    pub shop_picker_target: Option<(usize, usize)>,
+    /// Search for the All Shops item grid.
+    pub shop_all_search: String,
+    /// When true, shop grids only show items modified from vanilla.
+    pub shop_show_only_modified: bool,
+    /// Selected item name in the All Shops grid (edited in the sidebar).
+    pub shop_all_selected: Option<String>,
+    /// Selected shelf entry (node_idx, entry_idx) for the edit panel.
+    pub shop_selected_entry: Option<(usize, usize)>,
     /// "Copy logic from" picker (shared by the Items and Monsters tabs; only the active tab renders it).
     pub copy_picker_open: bool,
     pub copy_picker_search: String,
@@ -131,6 +231,9 @@ impl Default for ResalinatedApp {
             vanilla_data: None,
             vanilla_catalog: None,
             working_catalog: None,
+            vanilla_dialog: None,
+            working_dialog: None,
+            merchant_locations: HashMap::new(),
             game_path,
             preset_manager: PresetManager::new(),
             active_tab: Tab::Manager,
@@ -173,6 +276,22 @@ impl Default for ResalinatedApp {
             magic_item_search: String::new(),
             magic_item_picker_target_slot_id: None,
             magic_item_picker_focus: false,
+            magic_clipboard: crate::magic_slot::MagicClipboard::default(),
+            magic_copy_picker_open: false,
+            flags_clipboard: None,
+            flags_copy_picker_open: false,
+            shop_picker_open: false,
+            shop_picker_search: String::new(),
+            shop_picker_focus: false,
+            shop_list_search: String::new(),
+            shop_selected_npc: None,
+            shop_all_shops: false,
+            shop_merchant_search: String::new(),
+            shop_all_search: String::new(),
+            shop_show_only_modified: false,
+            shop_all_selected: None,
+            shop_selected_entry: None,
+            shop_picker_target: None,
             copy_picker_open: false,
             copy_picker_search: String::new(),
             copy_picker_focus: false,
@@ -242,6 +361,50 @@ impl ResalinatedApp {
                 self.monster_catalog_error = Some(e);
             }
         }
+        match load_dialog_catalog(game_path) {
+            Ok(cat) => {
+                self.vanilla_dialog = Some(cat.clone());
+                self.working_dialog = Some(cat);
+            }
+            Err(e) => {
+                self.vanilla_dialog = None;
+                self.working_dialog = None;
+                self.catalog_error = Some(e);
+            }
+        }
+        self.load_merchant_locations(game_path);
+    }
+
+    /// Scan the .zax map files for NPC placements and build a dialog-name -> (map, x, y) lookup for the Shop tab.
+    fn load_merchant_locations(&mut self, game_path: &Path) {
+        self.merchant_locations.clear();
+        let Ok((master, flag_defs)) = load_texture_catalog(game_path) else {
+            return;
+        };
+        let Ok(entries) = std::fs::read_dir(game_path.join("Map").join("data")) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            if path.extension().and_then(|e| e.to_str()) != Some("zax") {
+                continue;
+            }
+            let Ok(data) = std::fs::read(&path) else {
+                continue;
+            };
+            let Ok(map) = sas2_parser::map::MapData::load_from_bytes(&data, &master, &flag_defs)
+            else {
+                continue;
+            };
+            for e in map.entities {
+                self.merchant_locations
+                    .entry(e.texture.clone())
+                    .or_insert((stem.to_string(), e.loc.0, e.loc.1));
+            }
+        }
     }
 
     /// Update the stored game path, persist it, and reload everything.
@@ -276,8 +439,7 @@ impl ResalinatedApp {
         Ok(())
     }
 
-    /// Replace the working-assets folder with a preset's assets, and reset the asset editors so
-    /// they reload from it.
+    /// Replace the working-assets folder with a preset's assets, and reset the asset editors so they reload from it.
     fn load_assets_from_preset(&mut self, folder_name: &str) {
         let working = crate::assets::working_root();
         crate::assets::remove_dir_if_exists(&working);
@@ -494,8 +656,7 @@ impl ResalinatedApp {
             }
         }
 
-        // Disabled items are NOT removed here: this merge is the full catalog used for the working
-        // view (so disabled entries remain re-enableable). The exported loot.zls filters them out.
+        // Disabled items are NOT removed here: this merge is the full catalog used for the working view (so disabled entries remain re-enableable). The exported loot.zls filters them out.
 
         // Rebuild by_name map
         merged.by_name.clear();
@@ -557,8 +718,8 @@ impl ResalinatedApp {
         Ok(merged)
     }
 
-    /// Serialize one magic slot value (selected by `select`) into the weapon -> {x,y,b} format the
-    /// loader reads. Only non-vanilla (!= 1.0) values are written to keep the files small.
+    /// Serialize one magic slot value (selected by `select`) into the weapon -> {x,y,b} format the loader reads.
+    /// Only non-vanilla (!= 1.0) values are written to keep the files small.
     fn magic_slot_json(
         merged: &HashMap<String, HashMap<i32, MagicSlotOverrides>>,
         select: impl Fn(&MagicSlotOverrides) -> f32,
@@ -640,8 +801,8 @@ impl ResalinatedApp {
                 }
             }
         }
-        // Disabled monsters are kept in this full merge (for the working view); the exported
-        // monsters.zms filters them out.
+        // Disabled monsters are kept in this full merge (for the working view)
+        // The exported monsters.zms filters them out.
 
         merged.by_name.clear();
         for (i, def) in merged.monsters.iter().enumerate() {
@@ -725,6 +886,24 @@ impl ResalinatedApp {
         self.preset_manager
             .save_preset_file(folder_name, "shop_additions.json", &shop_bytes)?;
 
+        // Shop edits: full dialog delta (only NPCs whose store scripts changed).
+        if let Some(working) = &self.working_dialog {
+            if let Some(vanilla) = &self.vanilla_dialog {
+                let delta = dialog_delta(vanilla, working);
+                if !delta.npcs.is_empty() {
+                    let bytes = delta
+                        .to_bytes()
+                        .map_err(|e| format!("Failed to serialize shop edits: {}", e))?;
+                    self.preset_manager
+                        .save_preset_file(folder_name, "shop_edits.zdx", &bytes)?;
+                } else {
+                    let _ = self
+                        .preset_manager
+                        .save_preset_file(folder_name, "shop_edits.zdx", &[]);
+                }
+            }
+        }
+
         let craft_bytes = serde_json::to_vec(&self.craft_additions)
             .map_err(|e| format!("Failed to serialize craft additions: {}", e))?;
         self.preset_manager
@@ -738,9 +917,9 @@ impl ResalinatedApp {
         Ok(())
     }
 
-    /// Save the currently edited preset in place. If the author/name/version
-    /// changed, the folder is moved to the new GUID name (the old folder is
-    /// removed) and the enabled list is updated. Returns the final folder name.
+    /// Save the currently edited preset in place.
+    /// If the author/name/version changed, the folder is moved to the new GUID name (the old folder is removed) and the enabled list is updated.
+    /// Returns the final folder name.
     pub fn save_preset_in_place(&mut self) -> Result<String, String> {
         let old_folder = self.edit_folder_name.clone();
         if old_folder.is_empty() {
@@ -757,8 +936,7 @@ impl ResalinatedApp {
         }
 
         if new_folder != old_folder {
-            // Identity changed: move the folder to the new name, replacing any
-            // preset that already occupies it.
+            // Identity changed: move the folder to the new name, replacing any preset that already occupies it.
             let old_dir = self.preset_manager.presets_dir().join(&old_folder);
             let new_dir = self.preset_manager.presets_dir().join(&new_folder);
             if new_dir.exists() {
@@ -775,8 +953,8 @@ impl ResalinatedApp {
     }
 
     pub(crate) fn apply_enabled_presets(&mut self) {
-        // Loot: working view keeps the full merge (disabled items stay, re-enableable); the
-        // exported loot.zls has disabled items removed so the game does not load them.
+        // Loot: working view keeps the full merge (disabled items stay, re-enableable)
+        // The exported loot.zls has disabled items removed so the game does not load them.
         match self.merge_enabled_presets() {
             Ok(merged_loot) => match LootCatalog::load_from_bytes(&merged_loot) {
                 Ok(full) => {
@@ -886,12 +1064,48 @@ impl ResalinatedApp {
             }
         }
 
+        // Write the merged dialog catalog (merchant shop scripts) as an override,
+        // but only when some preset actually changed a store script.
+        match merge_dialog_edits(self) {
+            Ok(merged_dialog) => {
+                let changed = self
+                    .vanilla_dialog
+                    .as_ref()
+                    .map(|v| !dialog_delta(v, &merged_dialog).npcs.is_empty())
+                    .unwrap_or(false);
+                if changed {
+                    if let Some(gp) = &self.game_path {
+                        let dest =
+                            gp.join("BepInEx/config/amione.SaS2Resalter/Dialog/data/dialog.zdx");
+                        match merged_dialog.to_bytes() {
+                            Ok(bytes) => {
+                                if let Err(e) = std::fs::create_dir_all(dest.parent().unwrap()) {
+                                    self.error_message =
+                                        Some(format!("Failed to create dialog dir: {}", e));
+                                } else if let Err(e) = std::fs::write(&dest, &bytes) {
+                                    self.error_message =
+                                        Some(format!("Failed to write dialog.zdx: {}", e));
+                                }
+                            }
+                            Err(e) => {
+                                self.error_message =
+                                    Some(format!("Failed to serialize dialog: {}", e))
+                            }
+                        }
+                    }
+                }
+                self.working_dialog = Some(merged_dialog);
+            }
+            Err(e) => self.error_message = Some(e),
+        }
+
         // Merge binary assets (textures, master.zcm, char defs, custom icons) into the config.
         self.merge_assets_to_config();
     }
 
-    /// Merge per-item additions (shop or craft) from all enabled presets into the loader's line
-    /// format. Each entry is "item" or "flag:item". Later presets override an item's flag.
+    /// Merge per-item additions (shop or craft) from all enabled presets into the loader's line format.
+    /// Each entry is "item" or "flag:item".
+    /// Later presets override an item's flag.
     fn merged_additions_text(&self, sidecar: &str) -> String {
         let mut merged: HashMap<String, String> = HashMap::new();
         for folder_name in self.preset_manager.enabled_presets() {
@@ -998,6 +1212,37 @@ impl ResalinatedApp {
                         self.craft_additions = serde_json::from_slice(&data).unwrap_or_default();
                     } else {
                         self.craft_additions.clear();
+                    }
+
+                    // Load shop edits (merchant store scripts) on top of vanilla dialog.
+                    if let Some(data) = self
+                        .preset_manager
+                        .get_preset_file(folder_name, "shop_edits.zdx")
+                    {
+                        if data.is_empty() {
+                            self.working_dialog = self.vanilla_dialog.clone();
+                        } else {
+                            match sas2_parser::dialog::DialogCatalog::load_from_bytes(&data) {
+                                Ok(delta) => {
+                                    let mut merged = self.vanilla_dialog.clone().unwrap_or_default();
+                                    for npc in delta.npcs {
+                                        if let Some(existing) = merged.find_npc_mut(&npc.name) {
+                                            *existing = npc;
+                                        } else {
+                                            merged.npcs.push(npc);
+                                        }
+                                    }
+                                    self.working_dialog = Some(merged);
+                                }
+                                Err(e) => {
+                                    self.working_dialog = self.vanilla_dialog.clone();
+                                    self.error_message =
+                                        Some(format!("Failed to load shop edits: {}", e));
+                                }
+                            }
+                        }
+                    } else {
+                        self.working_dialog = self.vanilla_dialog.clone();
                     }
 
                     // Rebuild the by_name map
@@ -1324,6 +1569,7 @@ impl eframe::App for ResalinatedApp {
                 ui.selectable_value(&mut self.active_tab, Tab::Textures, "Textures");
                 ui.selectable_value(&mut self.active_tab, Tab::Animations, "Animations");
                 ui.selectable_value(&mut self.active_tab, Tab::Images, "Images");
+                ui.selectable_value(&mut self.active_tab, Tab::Shop, "Shop");
 
                 ui.vertical(|ui| {
                     // progress bar while textures are loading
@@ -1346,6 +1592,7 @@ impl eframe::App for ResalinatedApp {
                 Tab::Textures => textures::show(self, ui),
                 Tab::Animations => animations::show(self, ui),
                 Tab::Images => images::show(self, ui),
+                Tab::Shop => shop::show(self, ui),
             }
         });
     }

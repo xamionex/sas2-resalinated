@@ -4,6 +4,7 @@ pub mod items;
 pub mod manager;
 pub mod monsters;
 pub mod preset_info;
+pub mod shop;
 pub mod textures;
 pub mod utils;
 
@@ -16,4 +17,5 @@ pub enum Tab {
     Textures,
     Animations,
     Images,
+    Shop,
 }
