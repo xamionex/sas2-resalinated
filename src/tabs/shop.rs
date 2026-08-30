@@ -764,7 +764,7 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
                         node_move = Some(1);
                     }
                     if ui
-                        .button("x")
+                        .button("Remove")
                         .on_hover_text("Remove from this merchant")
                         .clicked()
                     {
@@ -976,17 +976,29 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
         app.shop_picker_focus = true;
     }
 
-    // "Add item" picker: item grid over the whole catalog.
+    // "Add item" picker: same item grid as the Items tab (grouped by type-subtype category, both scrollbars) with a search that auto-focuses on open.
     if app.shop_picker_open {
         let mut open = app.shop_picker_open;
         let mut chosen: Option<String> = None;
         egui::Window::new("Add item to shop")
             .collapsible(false)
             .resizable(true)
-            .default_width(520.0)
+            .default_width(620.0)
+            .default_height(480.0)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .open(&mut open)
             .show(ui.ctx(), |ui| {
+                // Search, auto-focused when the window opens.
+                ui.horizontal(|ui| {
+                    ui.label("Search:");
+                    let resp = ui.text_edit_singleline(&mut app.shop_picker_search);
+                    if app.shop_picker_focus {
+                        resp.request_focus();
+                        app.shop_picker_focus = false;
+                    }
+                });
+                ui.separator();
+
                 // Entries already present in the target node (to mark them).
                 let existing: Vec<String> = app
                     .shop_picker_target
@@ -999,40 +1011,67 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
                     })
                     .unwrap_or_default();
 
+                let needle = app.shop_picker_search.to_lowercase();
+                let filtered: Vec<&(String, String, f32, i32, i32, i32)> = all_items
+                    .iter()
+                    .filter(|(name, display, _, _, _, _)| {
+                        needle.is_empty()
+                            || name.to_lowercase().contains(&needle)
+                            || display.to_lowercase().contains(&needle)
+                    })
+                    .collect();
+
+                // Group by type-subtype category, exactly like the Items tab.
+                let mut grouped: std::collections::BTreeMap<
+                    String,
+                    Vec<&(String, String, f32, i32, i32, i32)>,
+                > = std::collections::BTreeMap::new();
+                for item in filtered {
+                    let cat = format!(
+                        "{} - {}",
+                        sas2_parser::loot_names::get_type_name(item.4),
+                        sas2_parser::loot_names::get_subtype_name(item.4, item.5)
+                    );
+                    grouped.entry(cat).or_default().push(item);
+                }
+
                 egui::ScrollArea::both()
                     .auto_shrink([false; 2])
-                    .max_height(420.0)
                     .show(ui, |ui| {
-                        ui.style_mut().interaction.selectable_labels = false;
-                        egui::Grid::new("shop_pick_grid")
-                            .spacing([8.0, 8.0])
-                            .show(ui, |ui| {
-                                for (name, display, cost, token_cost, _, _) in &all_items {
-                                    ui.vertical(|ui| {
-                                        let already = existing.contains(name);
-                                        let clicked = draw_item_cell(
-                                            ui,
-                                            app,
-                                            name,
-                                            display,
-                                            *cost,
-                                            *token_cost,
-                                            app.config.item_icon_size,
-                                            false,
-                                        );
-                                        if already {
-                                            ui.label(
-                                                egui::RichText::new("in shop")
-                                                    .small()
-                                                    .color(egui::Color32::LIGHT_GREEN),
+                        for (cat, entries) in grouped {
+                            ui.style_mut().interaction.selectable_labels = false;
+                            ui.label(egui::RichText::new(&cat).strong());
+                            egui::Grid::new(("shop_pick_grid", cat))
+                                .spacing([8.0, 8.0])
+                                .show(ui, |ui| {
+                                    for (name, display, cost, token_cost, _, _) in entries {
+                                        ui.vertical(|ui| {
+                                            let already = existing.contains(name);
+                                            let clicked = draw_item_cell(
+                                                ui,
+                                                app,
+                                                name,
+                                                display,
+                                                *cost,
+                                                *token_cost,
+                                                app.config.item_icon_size,
+                                                false,
                                             );
-                                        }
-                                        if clicked {
-                                            chosen = Some(name.clone());
-                                        }
-                                    });
-                                }
-                            });
+                                            if already {
+                                                ui.label(
+                                                    egui::RichText::new("in shop")
+                                                        .small()
+                                                        .color(egui::Color32::LIGHT_GREEN),
+                                                );
+                                            }
+                                            if clicked {
+                                                chosen = Some(name.clone());
+                                            }
+                                        });
+                                    }
+                                });
+                            ui.add_space(8.0);
+                        }
                     });
             });
         app.shop_picker_open = open;
