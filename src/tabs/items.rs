@@ -296,7 +296,11 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
                 for cat in categories {
                     let entries = grouped.get(&cat).unwrap();
                     ui.style_mut().interaction.selectable_labels = false;
-                    ui.label(egui::RichText::new(&cat).strong());
+                    ui.label(
+                        egui::RichText::new(&cat)
+                            .strong()
+                            .size(app.config.category_font_size),
+                    );
 
                     egui::Grid::new(&cat).spacing([8.0, 8.0]).show(ui, |ui| {
                         for (orig_idx, def) in entries {
@@ -324,13 +328,13 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
                                 add_item_label(
                                     ui,
                                     &display_name,
-                                    app.config.item_font_size,
+                                    app.config.grid_font_size,
                                     app.selected_item_idx == Some(*orig_idx),
                                 );
                                 if app.loot_disabled.contains(&def.name) {
                                     ui.label(
                                         egui::RichText::new("(disabled)")
-                                            .small()
+                                            
                                             .color(egui::Color32::from_rgb(220, 120, 120)),
                                     );
                                 }
@@ -742,6 +746,11 @@ fn show_lootdef_editor(
     egui::ScrollArea::vertical()
         .auto_shrink([false; 2])
         .show(ui, |ui| {
+            ui.style_mut().override_text_style = Some(egui::TextStyle::Body);
+            ui.style_mut().text_styles.insert(
+                egui::TextStyle::Body,
+                egui::FontId::proportional(app.config.sidebar_font_size),
+            );
             ui.heading("Loot Definition");
 
             if let Some(vanilla_def) = &vanilla {
@@ -881,8 +890,7 @@ fn show_lootdef_editor(
                              material (an item's internal name) to craft it from. Applies after \
                              Apply Changes.",
                         )
-                        .small()
-                        .weak(),
+                        ,
                     );
                 }
             });
@@ -920,8 +928,7 @@ fn show_lootdef_editor(
                         egui::RichText::new(
                             "When > 0, the item costs this many tokens instead of silver.",
                         )
-                        .small()
-                        .weak(),
+                        ,
                     );
                     if let Some(v) = &vanilla {
                         if def.token_cost != v.token_cost && ui.button("↺").clicked() {
@@ -1296,6 +1303,45 @@ fn show_lootdef_editor(
                             loot_names::get_flag_name,
                         );
                     });
+                // For talismans (type 6), show the configured boost range next to each flag.
+                if def.type_ == 6 {
+                    ui.separator();
+                    ui.label(
+                        egui::RichText::new("Boost configs (Talisman Boosts tab)")
+                            .strong(),
+                    );
+                    for f in &def.flags {
+                        let name = loot_names::get_flag_name(6, *f);
+                        let unit = crate::charm_boost::charm_boost_unit(*f);
+                        let suffix = match unit {
+                            crate::charm_boost::CharmBoostUnit::Percent => "%",
+                            crate::charm_boost::CharmBoostUnit::Flat => "",
+                        };
+                        let range = app
+                            .charm_boosts
+                            .get(f)
+                            .cloned()
+                            .unwrap_or_else(|| crate::charm_boost::CharmBoostRange::vanilla(*f));
+                        let changed = range.is_modified(*f);
+                        ui.horizontal(|ui| {
+                            if changed {
+                                ui.colored_label(crate::tabs::utils::CHANGED_COLOR, name);
+                            } else {
+                                ui.label(name);
+                            }
+                            if range.static_boost {
+                                ui.label(format!("static {:.1}{}", range.static_value, suffix));
+                            } else if (range.max - range.min).abs() > 0.0001 {
+                                ui.label(format!(
+                                    "{:.1}{} - {:.1}{}",
+                                    range.min, suffix, range.max, suffix
+                                ));
+                            } else {
+                                ui.label(format!("{:.1}{}", range.min, suffix));
+                            }
+                        });
+                    }
+                }
             });
         });
 
@@ -1588,8 +1634,7 @@ fn show_lootdef_editor(
                 });
                 ui.label(
                     egui::RichText::new("Search by the Img value. Custom icons are managed in the Images tab.")
-                        .small()
-                        .weak(),
+                        ,
                 );
                 ui.separator();
                 if app.image_editor.icons.is_empty() {

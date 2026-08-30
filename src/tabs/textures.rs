@@ -60,7 +60,6 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
 }
 
 fn show_texture_list(app: &mut ResalinatedApp, ui: &mut Ui, game_path: &std::path::Path) {
-    ui.heading("Textures");
     ui.horizontal(|ui| {
         ui.label("Search:");
         ui.text_edit_singleline(&mut app.texture_editor.search);

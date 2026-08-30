@@ -35,6 +35,16 @@ pub struct FlagsClipboard {
     pub source: Option<String>,
 }
 
+/// Copied monster drops for the Paste drops button.
+/// Drops are the monster fields 45-59 (five tiers of Type/Prob/Count).
+#[derive(Clone, Default)]
+pub struct DropsClipboard {
+    /// Field ids 45..=59 with their values, as copied from the source monster.
+    pub fields: Vec<(i32, sas2_parser::monster_catalog::MonsterFieldValue)>,
+    /// Display name of the monster the drops were copied from (for UI feedback).
+    pub source: Option<String>,
+}
+
 fn default_mul() -> f32 {
     1.0
 }

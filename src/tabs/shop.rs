@@ -220,13 +220,13 @@ fn draw_item_cell(
     let btn_w = response.rect.width();
     let clicked = response.clicked();
     ui.set_max_width(btn_w);
-    crate::tabs::items::add_item_label(ui, display, app.config.item_font_size, selected);
+    crate::tabs::items::add_item_label(ui, display, app.config.grid_font_size, selected);
     let price = if token_cost > 0 {
         format!("{} tokens", token_cost)
     } else {
         format!("{} silver", cost)
     };
-    ui.label(egui::RichText::new(price).small().weak());
+    ui.label(egui::RichText::new(price));
     clicked
 }
 
@@ -280,7 +280,7 @@ fn item_grid_selectable(
         .show(ui, |ui| {
             for (cat, entries) in grouped {
                 ui.style_mut().interaction.selectable_labels = false;
-                ui.label(egui::RichText::new(&cat).strong());
+                ui.label(egui::RichText::new(&cat).strong().size(app.config.category_font_size));
                 egui::Grid::new(("shop_item_grid", cat))
                     .spacing([8.0, 8.0])
                     .show(ui, |ui| {
@@ -419,8 +419,7 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
                  from the item's Cost field; currency is silver, or tokens when the item has a token \
                  cost. An optional flag gates an entry behind progression (flag:item).",
             )
-            .small()
-            .weak(),
+            ,
         )
         .wrap(),
     );
@@ -439,8 +438,7 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
                     "Items selected here are appended to every merchant's buy menu. An optional \
                      flag gates the item behind progression.",
                 )
-                .small()
-                .weak(),
+                ,
             );
 
             // Right panel: edit the selected item (sell-in-all-shops toggle).
@@ -559,8 +557,7 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
                         egui::RichText::new(
                             "Cost changes apply to the item everywhere (same as the Items tab).",
                         )
-                        .small()
-                        .weak(),
+                        ,
                     );
                 });
 
@@ -747,8 +744,7 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
                             egui::RichText::new(
                                 "Cost changes apply to the item everywhere (same as the Items tab).",
                             )
-                            .small()
-                            .weak(),
+                            ,
                         );
                     }
                     None => {
@@ -915,7 +911,7 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
                                             crate::tabs::items::add_item_label(
                                                 ui,
                                                 display,
-                                                app.config.item_font_size,
+                                                app.config.grid_font_size,
                                                 selected,
                                             );
                                             let cost_str = if *token_cost > 0 {
@@ -925,15 +921,13 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
                                             };
                                             ui.label(
                                                 egui::RichText::new(cost_str)
-                                                    .small()
-                                                    .weak(),
+                                                    ,
                                             );
                                         }
                                         None => {
                                             ui.label(
                                                 egui::RichText::new("?")
-                                                    .small()
-                                                    .weak(),
+                                                    ,
                                             );
                                         }
                                     }
@@ -1040,7 +1034,7 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
                     .show(ui, |ui| {
                         for (cat, entries) in grouped {
                             ui.style_mut().interaction.selectable_labels = false;
-                            ui.label(egui::RichText::new(&cat).strong());
+                            ui.label(egui::RichText::new(&cat).strong().size(app.config.category_font_size));
                             egui::Grid::new(("shop_pick_grid", cat))
                                 .spacing([8.0, 8.0])
                                 .show(ui, |ui| {
@@ -1060,7 +1054,7 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
                                             if already {
                                                 ui.label(
                                                     egui::RichText::new("in shop")
-                                                        .small()
+                                                        
                                                         .color(egui::Color32::LIGHT_GREEN),
                                                 );
                                             }

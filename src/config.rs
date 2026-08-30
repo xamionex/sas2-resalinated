@@ -21,8 +21,21 @@ pub struct ResalinatedConfig {
     #[serde(default = "default_item_icon_size")]
     pub item_icon_size: f32,
 
-    #[serde(default = "default_item_font_size")]
-    pub item_font_size: f32,
+    /// Font size of item/monster names in the item grids.
+    #[serde(default = "default_grid_font_size")]
+    pub grid_font_size: f32,
+
+    /// Font size of the editor sidebars (item/monster/shop detail panels).
+    #[serde(default = "default_sidebar_font_size")]
+    pub sidebar_font_size: f32,
+
+    /// Font size of the top tab bar.
+    #[serde(default = "default_tabs_font_size")]
+    pub tabs_font_size: f32,
+
+    /// Font size of the grid category headers (e.g. "Weapon - Greatsword").
+    #[serde(default = "default_category_font_size")]
+    pub category_font_size: f32,
 
     #[serde(default = "default_drag_sensitivity")]
     pub drag_value_sensitivity: f32,
@@ -45,6 +58,26 @@ pub struct ResalinatedConfig {
     /// confirmation dialog and always overwrites.
     #[serde(default)]
     pub ignore_overwrite_warning: bool,
+
+    /// Remember and restore the window position on startup.
+    #[serde(default = "default_true")]
+    pub save_window_position: bool,
+
+    /// Remember and restore the window state (maximized) on startup.
+    #[serde(default = "default_true")]
+    pub save_window_state: bool,
+
+    /// Last window position (outer position of the root viewport).
+    #[serde(default)]
+    pub window_pos: Option<[f32; 2]>,
+
+    /// Last window inner size.
+    #[serde(default)]
+    pub window_size: Option<[f32; 2]>,
+
+    /// Last window maximized state.
+    #[serde(default)]
+    pub window_maximized: bool,
 }
 
 pub fn default_true() -> bool {
@@ -59,12 +92,20 @@ impl Default for ResalinatedConfig {
             manager_left_panel_width: 0.0,
             monsters_details_panel_width: 0.0,
             item_icon_size: default_item_icon_size(),
-            item_font_size: default_item_font_size(),
+            grid_font_size: default_grid_font_size(),
+            sidebar_font_size: default_sidebar_font_size(),
+            tabs_font_size: default_tabs_font_size(),
+            category_font_size: default_category_font_size(),
             drag_value_sensitivity: default_drag_sensitivity(),
             dummy_drag_value: 0.0,
             external_image_editor: String::new(),
             auto_type_fields: true,
             ignore_overwrite_warning: false,
+            save_window_position: true,
+            save_window_state: true,
+            window_pos: None,
+            window_size: None,
+            window_maximized: false,
         }
     }
 }
@@ -72,8 +113,17 @@ impl Default for ResalinatedConfig {
 pub fn default_item_icon_size() -> f32 {
     52.0
 }
-pub fn default_item_font_size() -> f32 {
+pub fn default_grid_font_size() -> f32 {
     12.0
+}
+pub fn default_sidebar_font_size() -> f32 {
+    14.0
+}
+pub fn default_tabs_font_size() -> f32 {
+    14.0
+}
+pub fn default_category_font_size() -> f32 {
+    13.0
 }
 pub fn default_drag_sensitivity() -> f32 {
     0.025

@@ -65,8 +65,8 @@ fn create_blank_monster(app: &mut ResalinatedApp) {
     add_monster(app, def);
 }
 
-/// Remove the selected monster from the working catalog and reindex. Vanilla monsters removed here
-/// are recorded as deletions on save, so they also drop out of the applied catalog.
+/// Remove the selected monster from the working catalog and reindex.
+/// Vanilla monsters removed here are recorded as deletions on save, so they also drop out of the applied catalog.
 fn delete_selected_monster(app: &mut ResalinatedApp) {
     let Some(idx) = app.selected_monster_idx else {
         return;
@@ -214,6 +214,14 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
                         vanilla_def.as_ref(),
                         hitbox_preview.as_ref(),
                         &mut request_copy_picker,
+                        &mut app.drops_clipboard,
+                        &mut app.drops_copy_picker_open,
+                        &mut app.copy_picker_search,
+                        &mut app.copy_picker_focus,
+                        &mut app.drop_item_picker_target,
+                        &mut app.drop_item_picker_focus,
+                        app.config.drag_value_sensitivity,
+                        app.config.sidebar_font_size,
                     );
                 } else {
                     ui.label("Invalid selection.");
@@ -297,6 +305,204 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
             }
         } else {
             app.copy_picker_open = false;
+        }
+    }
+
+    // "Copy drops (pick)" picker: same list as copy logic, but copies only the drops (fields 45-59) instead of the full logic.
+    if app.drops_copy_picker_open {
+        let sel = app.selected_monster_idx.and_then(|idx| {
+            app.working_monster_catalog
+                .as_ref()
+                .and_then(|c| c.monsters.get(idx))
+                .map(|d| (d.name.clone(), d.type_, d.sub_type))
+        });
+        if let Some((sel_name, sel_type, sel_sub)) = sel {
+            let mut chosen: Option<String> = None;
+            let mut open = app.drops_copy_picker_open;
+            egui::Window::new("Copy drops from")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .open(&mut open)
+                .show(ui.ctx(), |ui| {
+                    ui.set_width(320.0);
+                    ui.label(format!(
+                        "Monsters of type {} ({})",
+                        sel_type,
+                        monster_names::get_monster_type_name(sel_type)
+                    ));
+                    ui.horizontal(|ui| {
+                        ui.label("🔍");
+                        let resp = ui.text_edit_singleline(&mut app.copy_picker_search);
+                        if app.copy_picker_focus {
+                            resp.request_focus();
+                            app.copy_picker_focus = false;
+                        }
+                    });
+                    ui.separator();
+
+                    let needle = app.copy_picker_search.to_lowercase();
+                    let mut matches: Vec<&(String, String, i32, i32)> = copy_candidates
+                        .iter()
+                        .filter(|(n, disp, t, _)| {
+                            *t == sel_type
+                                && n != &sel_name
+                                && (needle.is_empty()
+                                    || n.to_lowercase().contains(&needle)
+                                    || disp.to_lowercase().contains(&needle))
+                        })
+                        .collect();
+                    matches.sort_by_key(|(_, _, _, st)| (*st != sel_sub) as i32);
+
+                    egui::ScrollArea::vertical().max_height(400.0).show(ui, |ui| {
+                        for (n, disp, _, st) in matches {
+                            let label = if *st == sel_sub {
+                                format!("{} ({})", disp, n)
+                            } else {
+                                format!("{} ({}) [sub {}]", disp, n, st)
+                            };
+                            if ui.selectable_label(false, label).clicked() {
+                                chosen = Some(n.clone());
+                            }
+                        }
+                    });
+                });
+            app.drops_copy_picker_open = open;
+            if let Some(src_name) = chosen {
+                if let Some(src_idx) = app
+                    .working_monster_catalog
+                    .as_ref()
+                    .and_then(|c| c.by_name.get(&src_name).copied())
+                {
+                    copy_drops_from(app, src_idx as usize);
+                }
+                if let Some(idx) = app.selected_monster_idx {
+                    paste_drops_to(app, idx);
+                }
+                app.drops_copy_picker_open = false;
+            }
+        } else {
+            app.drops_copy_picker_open = false;
+        }
+    }
+
+    // Item picker for a drop type field: grouped grid like the shop's add-item picker, with a materials-only toggle.
+    if app.drop_item_picker_target.is_some() {
+        let mut open = true;
+        let mut chosen: Option<String> = None;
+        egui::Window::new("Pick drop item")
+            .collapsible(false)
+            .resizable(true)
+            .default_width(620.0)
+            .default_height(480.0)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .open(&mut open)
+            .show(ui.ctx(), |ui| {
+                ui.horizontal(|ui| {
+                    ui.checkbox(
+                        &mut app.drop_item_picker_materials_only,
+                        "Materials only",
+                    );
+                    ui.label("Search:");
+                    let resp = ui.text_edit_singleline(&mut app.drop_item_picker_search);
+                    if app.drop_item_picker_focus {
+                        resp.request_focus();
+                        app.drop_item_picker_focus = false;
+                    }
+                });
+                ui.separator();
+
+                let needle = app.drop_item_picker_search.to_lowercase();
+                let loot = app.working_catalog.as_ref();
+                let mut grouped: std::collections::BTreeMap<
+                    String,
+                    Vec<&sas2_parser::loot_catalog::LootDef>,
+                > = std::collections::BTreeMap::new();
+                if let Some(cat) = loot {
+                    for d in &cat.loot_defs {
+                        if app.drop_item_picker_materials_only && d.type_ != 4 {
+                            continue;
+                        }
+                        let display = d
+                            .title
+                            .first()
+                            .filter(|t| !t.is_empty())
+                            .cloned()
+                            .unwrap_or_else(|| d.name.clone());
+                        if !needle.is_empty()
+                            && !d.name.to_lowercase().contains(&needle)
+                            && !display.to_lowercase().contains(&needle)
+                        {
+                            continue;
+                        }
+                        let cat_name = format!(
+                            "{} - {}",
+                            sas2_parser::loot_names::get_type_name(d.type_),
+                            sas2_parser::loot_names::get_subtype_name(d.type_, d.sub_type)
+                        );
+                        grouped.entry(cat_name).or_default().push(d);
+                    }
+                }
+
+                egui::ScrollArea::both()
+                    .auto_shrink([false; 2])
+                    .show(ui, |ui| {
+                        for (cat_name, entries) in grouped {
+                            ui.style_mut().interaction.selectable_labels = false;
+                            ui.label(egui::RichText::new(&cat_name).strong().size(app.config.category_font_size));
+                            egui::Grid::new(("drop_pick_grid", cat_name))
+                                .spacing([8.0, 8.0])
+                                .show(ui, |ui| {
+                                    for d in entries {
+                                        ui.vertical(|ui| {
+                                            let response = crate::tabs::items::draw_image_button(
+                                                ui,
+                                                app.item_atlas.as_ref(),
+                                                Some(d),
+                                                app.config.item_icon_size,
+                                                &app.image_editor,
+                                            );
+                                            if response.clicked() {
+                                                chosen = Some(d.name.clone());
+                                            }
+                                            let display = d
+                                                .title
+                                                .first()
+                                                .filter(|t| !t.is_empty())
+                                                .cloned()
+                                                .unwrap_or_else(|| d.name.clone());
+                                            crate::tabs::items::add_item_label(
+                                                ui,
+                                                &display,
+                                                app.config.grid_font_size,
+                                                false,
+                                            );
+                                        });
+                                    }
+                                });
+                            ui.add_space(8.0);
+                        }
+                    });
+            });
+
+        if let Some(name) = chosen {
+            if let (Some(idx), Some(field_id)) =
+                (app.selected_monster_idx, app.drop_item_picker_target)
+            {
+                if let Some(cat) = app.working_monster_catalog.as_mut() {
+                    if let Some(def) = cat.monsters.get_mut(idx) {
+                        if let Some(field) = def.fields.iter_mut().find(|f| f.id == field_id) {
+                            field.value = MonsterFieldValue::String(name);
+                        }
+                    }
+                }
+            }
+            app.drop_item_picker_target = None;
+            app.drop_item_picker_search.clear();
+        }
+        if !open {
+            app.drop_item_picker_target = None;
+            app.drop_item_picker_search.clear();
         }
     }
 
@@ -430,7 +636,11 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
                 for cat in categories {
                     let entries = grouped.get(&cat).unwrap();
                     ui.style_mut().interaction.selectable_labels = false;
-                    ui.label(egui::RichText::new(&cat).strong());
+                    ui.label(
+                        egui::RichText::new(&cat)
+                            .strong()
+                            .size(app.config.category_font_size),
+                    );
 
                     egui::Grid::new(&cat).spacing([8.0, 8.0]).show(ui, |ui| {
                         for (orig_idx, def) in entries {
@@ -477,13 +687,13 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
                                 add_monster_label(
                                     ui,
                                     &display_name,
-                                    app.config.item_font_size,
+                                    app.config.grid_font_size,
                                     app.selected_monster_idx == Some(*orig_idx),
                                 );
                                 if app.monster_disabled.contains(&def.name) {
                                     ui.label(
                                         egui::RichText::new("(disabled)")
-                                            .small()
+                                            
                                             .color(egui::Color32::from_rgb(220, 120, 120)),
                                     );
                                 }
@@ -523,16 +733,128 @@ fn apply_monster_copy_logic(app: &mut ResalinatedApp, idx: usize, src_name: &str
     }
 }
 
+/// Drop tier field triples (Type / Prob / Count) for a monster type.
+/// Monsters (type 1) use fields 45-59; harvest (type 5) uses fields 0-14.
+fn drop_tiers(monster_type: i32) -> Vec<(i32, i32, i32)> {
+    let base = if monster_type == 5 { 0 } else { 45 };
+    (0..5)
+        .map(|i| (base + i * 3, base + i * 3 + 1, base + i * 3 + 2))
+        .collect()
+}
+
+/// Drop field ids for a monster type: five loot tiers (Type / Prob / Count).
+fn drop_field_ids(monster_type: i32) -> Vec<i32> {
+    drop_tiers(monster_type)
+        .into_iter()
+        .flat_map(|(t, p, c)| [t, p, c])
+        .collect()
+}
+
+/// Copy the drops (five loot tiers) of `def` into the drops clipboard.
+fn copy_drops_from_def(
+    def: &MonsterDef,
+    clipboard: &mut Option<crate::magic_slot::DropsClipboard>,
+) {
+    let ids = drop_field_ids(def.type_);
+    let fields: Vec<(i32, MonsterFieldValue)> = def
+        .fields
+        .iter()
+        .filter(|f| ids.contains(&f.id))
+        .map(|f| (f.id, f.value.clone()))
+        .collect();
+    let source = def
+        .titles
+        .first()
+        .filter(|t| !t.is_empty())
+        .cloned()
+        .unwrap_or_else(|| def.name.clone());
+    *clipboard = Some(crate::magic_slot::DropsClipboard {
+        fields,
+        source: Some(source),
+    });
+}
+
+/// Apply the drops clipboard to `def`.
+fn paste_drops_to_def(def: &mut MonsterDef, clip: &crate::magic_slot::DropsClipboard) {
+    let ids = drop_field_ids(def.type_);
+    for f in &mut def.fields {
+        if ids.contains(&f.id) {
+            if let Some((_, v)) = clip.fields.iter().find(|(id, _)| *id == f.id) {
+                f.value = v.clone();
+            }
+        }
+    }
+}
+
+/// Reset all drops on `def` to vanilla.
+fn default_drops_on_def(def: &mut MonsterDef, vanilla: Option<&MonsterDef>) {
+    let ids = drop_field_ids(def.type_);
+    let vanilla_fields: Vec<(i32, MonsterFieldValue)> = vanilla
+        .map(|v| {
+            v.fields
+                .iter()
+                .filter(|f| ids.contains(&f.id))
+                .map(|f| (f.id, f.value.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+    for f in &mut def.fields {
+        if ids.contains(&f.id) {
+            if let Some((_, v)) = vanilla_fields.iter().find(|(id, _)| *id == f.id) {
+                f.value = v.clone();
+            }
+        }
+    }
+}
+
+/// Copy the drops of the monster at `src_idx` into the drops clipboard.
+fn copy_drops_from(app: &mut ResalinatedApp, src_idx: usize) {
+    let Some(cat) = app.working_monster_catalog.as_ref() else {
+        return;
+    };
+    let Some(src) = cat.monsters.get(src_idx) else {
+        return;
+    };
+    copy_drops_from_def(src, &mut app.drops_clipboard);
+}
+
+/// Apply the drops clipboard to the monster at `idx`.
+fn paste_drops_to(app: &mut ResalinatedApp, idx: usize) {
+    let Some(clip) = app.drops_clipboard.clone() else {
+        return;
+    };
+    let Some(cat) = app.working_monster_catalog.as_mut() else {
+        return;
+    };
+    let Some(def) = cat.monsters.get_mut(idx) else {
+        return;
+    };
+    paste_drops_to_def(def, &clip);
+}
+
 fn show_monsterdef_editor(
     ui: &mut Ui,
     def: &mut MonsterDef,
     vanilla: Option<&MonsterDef>,
     hitbox_preview: Option<&HitboxPreview>,
     request_copy_picker: &mut bool,
+    drops_clipboard: &mut Option<crate::magic_slot::DropsClipboard>,
+    drops_copy_picker_open: &mut bool,
+    copy_picker_search: &mut String,
+    copy_picker_focus: &mut bool,
+    drop_item_picker_target: &mut Option<i32>,
+    drop_item_picker_focus: &mut bool,
+    drag_speed: f32,
+    sidebar_font_size: f32,
 ) {
     egui::ScrollArea::vertical()
         .auto_shrink([false; 2])
         .show(ui, |ui| {
+            ui.style_mut().override_text_style = Some(egui::TextStyle::Body);
+            ui.style_mut().text_styles.insert(
+                egui::TextStyle::Body,
+                egui::FontId::proportional(sidebar_font_size),
+            );
             ui.heading("Monster Definition");
             if let Some(vanilla_def) = vanilla {
                 if ui.button("Reset Monster to Vanilla").clicked() {
@@ -756,6 +1078,161 @@ fn show_monsterdef_editor(
 
             ui.separator();
 
+            // Drops: five loot tiers (Type / Prob / Count).
+            // Monsters (type 1) use fields 45-59; harvest (type 5) uses fields 0-14.
+            let tiers = drop_tiers(def.type_);
+            let has_drops = def
+                .fields
+                .iter()
+                .any(|f| tiers.iter().any(|(t, p, c)| f.id == *t || f.id == *p || f.id == *c));
+            ui.collapsing("Drops", |ui| {
+                ui.horizontal(|ui| {
+                    if ui
+                        .button("Default drops")
+                        .on_hover_text("Set all drops on this monster back to vanilla")
+                        .clicked()
+                    {
+                        default_drops_on_def(def, vanilla);
+                    }
+                    if ui
+                        .button("Copy drops (pick)")
+                        .on_hover_text("Open the monster picker, then copy the selected monster's drops onto this one")
+                        .clicked()
+                    {
+                        *drops_copy_picker_open = true;
+                        copy_picker_search.clear();
+                        *copy_picker_focus = true;
+                    }
+                    if ui
+                        .button("Copy drops")
+                        .on_hover_text("Copy this monster's drops to the clipboard")
+                        .clicked()
+                    {
+                        copy_drops_from_def(def, drops_clipboard);
+                    }
+                    let has_clip = drops_clipboard.is_some();
+                    let paste_resp = ui.add_enabled(has_clip, egui::Button::new("Paste drops"));
+                    let paste_hover = if has_clip {
+                        match &drops_clipboard.as_ref().unwrap().source {
+                            Some(s) => format!("Apply the copied drops (from {}) to this monster", s),
+                            None => "Apply the copied drops to this monster".to_string(),
+                        }
+                    } else {
+                        "Copy drops first".to_string()
+                    };
+                    if paste_resp.on_hover_text(paste_hover).clicked() {
+                        if let Some(clip) = drops_clipboard {
+                            paste_drops_to_def(def, clip);
+                        }
+                    }
+                });
+                ui.separator();
+                if !has_drops {
+                    ui.label(
+                        egui::RichText::new("No drop fields on this monster yet.")
+                            ,
+                    );
+                } else {
+                    egui::ScrollArea::vertical()
+                        .max_height(280.0)
+                        .show(ui, |ui| {
+                            for (ti, (type_id, prob_id, count_id)) in tiers.iter().enumerate() {
+                                let changed = vanilla
+                                    .map(|v| {
+                                        let vf = |id| {
+                                            v.fields
+                                                .iter()
+                                                .find(|f| f.id == id)
+                                                .map(|f| &f.value)
+                                        };
+                                        let cf = |id| {
+                                            def.fields
+                                                .iter()
+                                                .find(|f| f.id == id)
+                                                .map(|f| &f.value)
+                                        };
+                                        match (
+                                            cf(*type_id),
+                                            vf(*type_id),
+                                            cf(*prob_id),
+                                            vf(*prob_id),
+                                            cf(*count_id),
+                                            vf(*count_id),
+                                        ) {
+                                            (Some(a), Some(b), Some(c), Some(d), Some(e), Some(f)) => {
+                                                monster_values_differ(a, b)
+                                                    || monster_values_differ(c, d)
+                                                    || monster_values_differ(e, f)
+                                            }
+                                            _ => true,
+                                        }
+                                    })
+                                    .unwrap_or(true);
+
+                                let label = if changed {
+                                    egui::RichText::new(format!("Item {}:", ti + 1))
+                                        .color(CHANGED_COLOR)
+                                } else {
+                                    egui::RichText::new(format!("Item {}:", ti + 1))
+                                };
+                                ui.horizontal(|ui| {
+                                    ui.label(label);
+                                    for (fi, id) in [*type_id, *prob_id, *count_id]
+                                        .iter()
+                                        .enumerate()
+                                    {
+                                        let Some(field) =
+                                            def.fields.iter_mut().find(|f| f.id == *id)
+                                        else {
+                                            continue;
+                                        };
+                                        // The tier header already says "Item N:", so the item
+                                        // field needs no label; only Prob/Count get one.
+                                        let field_label = match fi {
+                                            1 => "Prob:",
+                                            2 => "Count:",
+                                            _ => "",
+                                        };
+                                        if !field_label.is_empty() {
+                                            ui.label(field_label);
+                                        }
+                                        match &mut field.value {
+                                            MonsterFieldValue::String(v) => {
+                                                ui.add(
+                                                    egui::TextEdit::singleline(v).desired_width(
+                                                        ui.available_width() * 0.4,
+                                                    ),
+                                                );
+                                                if fi == 0 {
+                                                    if ui
+                                                        .small_button("Pick")
+                                                        .on_hover_text(
+                                                            "Pick an item from the catalog",
+                                                        )
+                                                        .clicked()
+                                                    {
+                                                        *drop_item_picker_target = Some(*id);
+                                                        *drop_item_picker_focus = true;
+                                                    }
+                                                }
+                                            }
+                                            MonsterFieldValue::Float(v) => {
+                                                ui.add(
+                                                    egui::DragValue::new(v)
+                                                        .speed(drag_speed),
+                                                );
+                                            }
+                                            MonsterFieldValue::Int(v) => {
+                                                ui.add(egui::DragValue::new(v));
+                                            }
+                                        }
+                                    }
+                                });
+                            }
+                        });
+                }
+            });
+
             // Fields
             ui.collapsing(format!("Fields ({})", def.fields.len()), |ui| {
                 // Copy logic (fields + flags) from another monster of the same type.
@@ -792,7 +1269,10 @@ fn show_monsterdef_editor(
                                 ui.label(label);
                                 match &mut field.value {
                                     MonsterFieldValue::Float(v) => {
-                                        ui.add(egui::DragValue::new(v).speed(0.1));
+                                        ui.add(
+                                            egui::DragValue::new(v)
+                                                .speed(drag_speed),
+                                        );
                                     }
                                     MonsterFieldValue::Int(v) => {
                                         ui.add(egui::DragValue::new(v));

@@ -2,12 +2,17 @@ use crate::atlas::{ItemAtlas, MonsterTextureCache};
 use crate::catalog::{
     load_dialog_catalog, load_loot_catalog, load_monster_catalog, load_texture_catalog,
 };
+use crate::charm_boost::CharmBoostRange;
 use crate::config::{
-    default_drag_sensitivity, default_item_font_size, default_item_icon_size, ResalinatedConfig,
+    default_category_font_size, default_drag_sensitivity, default_grid_font_size,
+    default_item_icon_size, default_sidebar_font_size, default_tabs_font_size, ResalinatedConfig,
 };
 use crate::magic_slot::MagicSlotOverrides;
 use crate::preset::{guid_folder_name, PresetManager, PresetMeta};
-use crate::tabs::{animations, images, items, manager, monsters, preset_info, shop, textures, Tab};
+use crate::tabs::{
+    animations, artifacts, images, items, manager, monsters, preset_info, shop, talismans,
+    textures, Tab,
+};
 use eframe::egui;
 use rfd::FileDialog;
 use sas2_parser::loot_catalog::LootCatalog;
@@ -134,6 +139,12 @@ pub struct ResalinatedApp {
     pub game_path: Option<PathBuf>,
     pub preset_manager: PresetManager,
     pub active_tab: Tab,
+    /// Talisman boost ranges: flag id -> {min, max, static, static_boost}.
+    /// Written to charm_boosts.json on apply; read by the loader's CharmBoostsPatch.
+    pub charm_boosts: HashMap<i32, CharmBoostRange>,
+    /// Artifact boost ranges: artifact field id -> {min, max, static, static_boost}.
+    /// Written to artifact_boosts.json on apply; read by the loader's ArtifactBoostsPatch.
+    pub artifact_boosts: HashMap<i32, crate::artifact_boost::ArtifactBoostRange>,
     // Items tab
     pub selected_item_idx: Option<usize>,
     pub search_filter: String,
@@ -186,6 +197,18 @@ pub struct ResalinatedApp {
     pub flags_clipboard: Option<crate::magic_slot::FlagsClipboard>,
     /// When true, the "Copy flags" picker copies flags instead of full logic.
     pub flags_copy_picker_open: bool,
+    /// Copied monster drops (fields 45-59 for monsters, 0-14 for harvest) for the Paste drops button.
+    pub drops_clipboard: Option<crate::magic_slot::DropsClipboard>,
+    /// When true, the "Copy drops (pick)" picker copies drops instead of full logic.
+    pub drops_copy_picker_open: bool,
+    /// Item picker for a drop type field: (target field id) when open.
+    pub drop_item_picker_target: Option<i32>,
+    /// Search text for the drop item picker.
+    pub drop_item_picker_search: String,
+    /// Focus the drop item picker search on open.
+    pub drop_item_picker_focus: bool,
+    /// When true, the drop item picker only shows materials (type 4).
+    pub drop_item_picker_materials_only: bool,
     // Shop tab
     pub shop_picker_open: bool,
     pub shop_picker_search: String,
@@ -222,9 +245,10 @@ pub struct ResalinatedApp {
     pub image_editor: crate::image_editor::ImageEditor,
 }
 
-impl Default for ResalinatedApp {
-    fn default() -> Self {
-        let config = ResalinatedConfig::load();
+impl ResalinatedApp {
+    /// Construct the app with a pre-loaded config (used by main.rs so window
+    /// position/state can be applied before the window opens).
+    pub fn with_config(config: ResalinatedConfig) -> Self {
         let game_path = config.game_path.clone();
         let mut app = Self {
             config,
@@ -237,6 +261,8 @@ impl Default for ResalinatedApp {
             game_path,
             preset_manager: PresetManager::new(),
             active_tab: Tab::Manager,
+            charm_boosts: HashMap::new(),
+            artifact_boosts: HashMap::new(),
             selected_item_idx: None,
             search_filter: String::new(),
             magic_slot_overrides: HashMap::new(),
@@ -280,6 +306,12 @@ impl Default for ResalinatedApp {
             magic_copy_picker_open: false,
             flags_clipboard: None,
             flags_copy_picker_open: false,
+            drops_clipboard: None,
+            drops_copy_picker_open: false,
+            drop_item_picker_target: None,
+            drop_item_picker_search: String::new(),
+            drop_item_picker_focus: false,
+            drop_item_picker_materials_only: false,
             shop_picker_open: false,
             shop_picker_search: String::new(),
             shop_picker_focus: false,
@@ -312,6 +344,12 @@ impl Default for ResalinatedApp {
             app.load_catalogs(game_path);
         }
         app
+    }
+}
+
+impl Default for ResalinatedApp {
+    fn default() -> Self {
+        Self::with_config(ResalinatedConfig::load())
     }
 }
 
@@ -690,6 +728,52 @@ impl ResalinatedApp {
             .map_err(|e| format!("Serialization error: {}", e))
     }
 
+    /// Merge charm boost configs from all enabled presets (later ones override earlier ones).
+    fn merged_charm_boosts(&self) -> Result<HashMap<i32, CharmBoostRange>, String> {
+        let mut merged: HashMap<i32, CharmBoostRange> = HashMap::new();
+        for folder_name in self.preset_manager.enabled_presets() {
+            if folder_name == "Vanilla (Base)" {
+                continue;
+            }
+            if let Some(data) = self
+                .preset_manager
+                .get_preset_file(folder_name, "charm_boosts.json")
+            {
+                let boosts: HashMap<i32, CharmBoostRange> = serde_json::from_slice(&data)
+                    .map_err(|e| format!("Invalid charm_boosts.json in '{}': {}", folder_name, e))?;
+                for (flag, range) in boosts {
+                    merged.insert(flag, range);
+                }
+            }
+        }
+        Ok(merged)
+    }
+
+    /// Merge artifact boost configs from all enabled presets (later ones override earlier ones).
+    fn merged_artifact_boosts(
+        &self,
+    ) -> Result<HashMap<i32, crate::artifact_boost::ArtifactBoostRange>, String> {
+        let mut merged: HashMap<i32, crate::artifact_boost::ArtifactBoostRange> = HashMap::new();
+        for folder_name in self.preset_manager.enabled_presets() {
+            if folder_name == "Vanilla (Base)" {
+                continue;
+            }
+            if let Some(data) = self
+                .preset_manager
+                .get_preset_file(folder_name, "artifact_boosts.json")
+            {
+                let boosts: HashMap<i32, crate::artifact_boost::ArtifactBoostRange> =
+                    serde_json::from_slice(&data).map_err(|e| {
+                        format!("Invalid artifact_boosts.json in '{}': {}", folder_name, e)
+                    })?;
+                for (field, range) in boosts {
+                    merged.insert(field, range);
+                }
+            }
+        }
+        Ok(merged)
+    }
+
     /// Merge magic overrides from all enabled presets (later ones override earlier ones).
     fn merged_magic_overrides(
         &self,
@@ -881,6 +965,16 @@ impl ResalinatedApp {
         self.preset_manager
             .save_preset_file(folder_name, "magic_overrides.json", &magic_bytes)?;
 
+        let charm_bytes = serde_json::to_vec(&self.charm_boosts)
+            .map_err(|e| format!("Failed to serialize charm boosts: {}", e))?;
+        self.preset_manager
+            .save_preset_file(folder_name, "charm_boosts.json", &charm_bytes)?;
+
+        let artifact_bytes = serde_json::to_vec(&self.artifact_boosts)
+            .map_err(|e| format!("Failed to serialize artifact boosts: {}", e))?;
+        self.preset_manager
+            .save_preset_file(folder_name, "artifact_boosts.json", &artifact_bytes)?;
+
         let shop_bytes = serde_json::to_vec(&self.shop_additions)
             .map_err(|e| format!("Failed to serialize shop additions: {}", e))?;
         self.preset_manager
@@ -1064,6 +1158,58 @@ impl ResalinatedApp {
             }
         }
 
+        // Write charm_boosts.json (per-flag talisman boost magnitudes).
+        match self.merged_charm_boosts() {
+            Ok(merged) => {
+                if let Some(gp) = &self.game_path {
+                    let config_dir = gp.join("BepInEx/config/amione.SaS2Resalter");
+                    if let Err(e) = std::fs::create_dir_all(&config_dir) {
+                        self.error_message = Some(format!("Failed to create config dir: {}", e));
+                    } else {
+                        match serde_json::to_string_pretty(&merged) {
+                            Ok(json) => {
+                                if let Err(e) =
+                                    std::fs::write(config_dir.join("charm_boosts.json"), json)
+                                {
+                                    self.error_message =
+                                        Some(format!("Failed to write charm_boosts.json: {}", e));
+                                }
+                            }
+                            Err(e) => self.error_message = Some(e.to_string()),
+                        }
+                    }
+                }
+            }
+            Err(e) => self.error_message = Some(e),
+        }
+
+        // Write artifact_boosts.json (per-field artifact roll ranges).
+        match self.merged_artifact_boosts() {
+            Ok(merged) => {
+                if let Some(gp) = &self.game_path {
+                    let config_dir = gp.join("BepInEx/config/amione.SaS2Resalter");
+                    if let Err(e) = std::fs::create_dir_all(&config_dir) {
+                        self.error_message = Some(format!("Failed to create config dir: {}", e));
+                    } else {
+                        match serde_json::to_string_pretty(&merged) {
+                            Ok(json) => {
+                                if let Err(e) =
+                                    std::fs::write(config_dir.join("artifact_boosts.json"), json)
+                                {
+                                    self.error_message = Some(format!(
+                                        "Failed to write artifact_boosts.json: {}",
+                                        e
+                                    ));
+                                }
+                            }
+                            Err(e) => self.error_message = Some(e.to_string()),
+                        }
+                    }
+                }
+            }
+            Err(e) => self.error_message = Some(e),
+        }
+
         // Write the merged dialog catalog (merchant shop scripts) as an override,
         // but only when some preset actually changed a store script.
         match merge_dialog_edits(self) {
@@ -1192,6 +1338,40 @@ impl ResalinatedApp {
                         }
                     } else {
                         self.magic_slot_overrides.clear();
+                    }
+
+                    // Load charm boosts (if the preset contains them), otherwise start empty.
+                    if let Some(data) = self
+                        .preset_manager
+                        .get_preset_file(folder_name, "charm_boosts.json")
+                    {
+                        match serde_json::from_slice(&data) {
+                            Ok(map) => self.charm_boosts = map,
+                            Err(e) => {
+                                self.charm_boosts.clear();
+                                self.error_message =
+                                    Some(format!("Failed to load charm boosts: {}", e));
+                            }
+                        }
+                    } else {
+                        self.charm_boosts.clear();
+                    }
+
+                    // Load artifact boosts (if the preset contains them), otherwise start empty.
+                    if let Some(data) = self
+                        .preset_manager
+                        .get_preset_file(folder_name, "artifact_boosts.json")
+                    {
+                        match serde_json::from_slice(&data) {
+                            Ok(map) => self.artifact_boosts = map,
+                            Err(e) => {
+                                self.artifact_boosts.clear();
+                                self.error_message =
+                                    Some(format!("Failed to load artifact boosts: {}", e));
+                            }
+                        }
+                    } else {
+                        self.artifact_boosts.clear();
                     }
 
                     // Load shop additions (if present), otherwise start empty.
@@ -1390,10 +1570,10 @@ impl ResalinatedApp {
                     });
 
                     ui.horizontal(|ui| {
-                        ui.label("Item Font Size:");
+                        ui.label("Grid Font Size:");
                         if ui
                             .add(
-                                egui::DragValue::new(&mut self.config.item_font_size)
+                                egui::DragValue::new(&mut self.config.grid_font_size)
                                     .range(6.0..=24.0)
                                     .speed(self.config.drag_value_sensitivity)
                                     .suffix("pt"),
@@ -1403,7 +1583,64 @@ impl ResalinatedApp {
                             self.config_save_timer = 0.1;
                         }
                         if ui.button("Reset").clicked() {
-                            self.config.item_font_size = default_item_font_size();
+                            self.config.grid_font_size = default_grid_font_size();
+                            self.config_save_timer = 0.1;
+                        }
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.label("Sidebar Font Size:");
+                        if ui
+                            .add(
+                                egui::DragValue::new(&mut self.config.sidebar_font_size)
+                                    .range(6.0..=24.0)
+                                    .speed(self.config.drag_value_sensitivity)
+                                    .suffix("pt"),
+                            )
+                            .changed()
+                        {
+                            self.config_save_timer = 0.1;
+                        }
+                        if ui.button("Reset").clicked() {
+                            self.config.sidebar_font_size = default_sidebar_font_size();
+                            self.config_save_timer = 0.1;
+                        }
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.label("Tabs Font Size:");
+                        if ui
+                            .add(
+                                egui::DragValue::new(&mut self.config.tabs_font_size)
+                                    .range(6.0..=24.0)
+                                    .speed(self.config.drag_value_sensitivity)
+                                    .suffix("pt"),
+                            )
+                            .changed()
+                        {
+                            self.config_save_timer = 0.1;
+                        }
+                        if ui.button("Reset").clicked() {
+                            self.config.tabs_font_size = default_tabs_font_size();
+                            self.config_save_timer = 0.1;
+                        }
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.label("Category Font Size:");
+                        if ui
+                            .add(
+                                egui::DragValue::new(&mut self.config.category_font_size)
+                                    .range(6.0..=24.0)
+                                    .speed(self.config.drag_value_sensitivity)
+                                    .suffix("pt"),
+                            )
+                            .changed()
+                        {
+                            self.config_save_timer = 0.1;
+                        }
+                        if ui.button("Reset").clicked() {
+                            self.config.category_font_size = default_category_font_size();
                             self.config_save_timer = 0.1;
                         }
                     });
@@ -1454,6 +1691,27 @@ impl ResalinatedApp {
                         .on_hover_text(
                             "New items and items whose type changes get that type's field set, \
                              copied from a vanilla item of the type (existing field values kept).",
+                        )
+                        .changed()
+                    {
+                        self.config_save_timer = 0.1;
+                    }
+
+                    ui.separator();
+                    ui.heading("Window");
+                    if ui
+                        .checkbox(
+                            &mut self.config.save_window_position,
+                            "Save window position",
+                        )
+                        .changed()
+                    {
+                        self.config_save_timer = 0.1;
+                    }
+                    if ui
+                        .checkbox(
+                            &mut self.config.save_window_state,
+                            "Save window state (maximized)",
                         )
                         .changed()
                     {
@@ -1562,14 +1820,17 @@ impl eframe::App for ResalinatedApp {
 
             // Tab bar
             ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.active_tab, Tab::Manager, "Manager");
-                ui.selectable_value(&mut self.active_tab, Tab::PresetInfo, "Preset Info");
-                ui.selectable_value(&mut self.active_tab, Tab::Items, "Items");
-                ui.selectable_value(&mut self.active_tab, Tab::Monsters, "Monsters");
-                ui.selectable_value(&mut self.active_tab, Tab::Textures, "Textures");
-                ui.selectable_value(&mut self.active_tab, Tab::Animations, "Animations");
-                ui.selectable_value(&mut self.active_tab, Tab::Images, "Images");
-                ui.selectable_value(&mut self.active_tab, Tab::Shop, "Shop");
+                let tabs = self.config.tabs_font_size;
+                ui.selectable_value(&mut self.active_tab, Tab::Manager, egui::RichText::new("Manager").size(tabs));
+                ui.selectable_value(&mut self.active_tab, Tab::PresetInfo, egui::RichText::new("Preset Info").size(tabs));
+                ui.selectable_value(&mut self.active_tab, Tab::Items, egui::RichText::new("Items").size(tabs));
+                ui.selectable_value(&mut self.active_tab, Tab::Monsters, egui::RichText::new("Monsters").size(tabs));
+                ui.selectable_value(&mut self.active_tab, Tab::Textures, egui::RichText::new("Textures").size(tabs));
+                ui.selectable_value(&mut self.active_tab, Tab::Animations, egui::RichText::new("Animations").size(tabs));
+                ui.selectable_value(&mut self.active_tab, Tab::Images, egui::RichText::new("Images").size(tabs));
+                ui.selectable_value(&mut self.active_tab, Tab::Shop, egui::RichText::new("Shop").size(tabs));
+                ui.selectable_value(&mut self.active_tab, Tab::Talismans, egui::RichText::new("Talisman Boosts").size(tabs));
+                ui.selectable_value(&mut self.active_tab, Tab::Artifacts, egui::RichText::new("Artifact Boosts").size(tabs));
 
                 ui.vertical(|ui| {
                     // progress bar while textures are loading
@@ -1593,6 +1854,8 @@ impl eframe::App for ResalinatedApp {
                 Tab::Animations => animations::show(self, ui),
                 Tab::Images => images::show(self, ui),
                 Tab::Shop => shop::show(self, ui),
+                Tab::Talismans => talismans::show(self, ui),
+                Tab::Artifacts => artifacts::show(self, ui),
             }
         });
     }
@@ -1602,6 +1865,39 @@ impl eframe::App for ResalinatedApp {
         self.monster_texture_cache.update(ctx);
         if self.monster_texture_cache.is_loading() {
             ctx.request_repaint();
+        }
+
+        // Persist window position/size/maximized state when enabled. Re-arms
+        // the throttled config save only when the window state actually changed.
+        if self.config.save_window_position || self.config.save_window_state {
+            let info = ctx.input(|i| i.viewport().clone());
+            let mut changed = false;
+            if self.config.save_window_position {
+                if let Some(rect) = info.outer_rect {
+                    let pos = [rect.min.x, rect.min.y];
+                    if self.config.window_pos != Some(pos) {
+                        self.config.window_pos = Some(pos);
+                        changed = true;
+                    }
+                }
+                if let Some(rect) = info.inner_rect {
+                    let size = [rect.width(), rect.height()];
+                    if self.config.window_size != Some(size) {
+                        self.config.window_size = Some(size);
+                        changed = true;
+                    }
+                }
+            }
+            if self.config.save_window_state {
+                let maximized = info.maximized.unwrap_or(false);
+                if self.config.window_maximized != maximized {
+                    self.config.window_maximized = maximized;
+                    changed = true;
+                }
+            }
+            if changed {
+                self.config_save_timer = 0.1;
+            }
         }
 
         if self.config_save_timer > 0.0 {

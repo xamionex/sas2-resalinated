@@ -4,9 +4,6 @@ use eframe::egui;
 use egui::Ui;
 
 pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
-    ui.heading("Preset Information");
-    ui.separator();
-
     ui.horizontal(|ui| {
         ui.label("Folder Name:");
         ui.add_enabled(
@@ -31,14 +28,10 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
         }
     });
     app.edit_meta.folder_override = app.folder_override_enabled;
-    ui.label(
-        egui::RichText::new(format!(
-            "Full path: {}",
-            app.preset_folder_path().display()
-        ))
-        .small()
-        .weak(),
-    );
+    ui.label(format!(
+        "Full path: {}",
+        app.preset_folder_path().display()
+    ));
 
     ui.horizontal(|ui| {
         ui.label("Name:");

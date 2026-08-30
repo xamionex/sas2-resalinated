@@ -1,16 +1,19 @@
 mod anim_editor;
 mod app;
+mod artifact_boost;
 pub mod assets;
 pub mod atlas;
-mod image_editor;
 mod catalog;
+mod charm_boost;
 mod config;
+mod image_editor;
 pub mod magic_slot;
 mod preset;
 pub mod tabs;
 pub mod texture_editor;
 
 use crate::app::ResalinatedApp;
+use crate::config::ResalinatedConfig;
 #[cfg(not(debug_assertions))]
 use hide_console::hide_console;
 
@@ -48,10 +51,27 @@ fn main() -> eframe::Result<()> {
         sas2_parser::set_monster_logging_enabled(false);
     }
 
-    let options = eframe::NativeOptions::default();
+    let config = ResalinatedConfig::load();
+    let mut builder = egui::ViewportBuilder::default().with_title("SaS2 Resalinated");
+    if config.save_window_position {
+        if let Some([x, y]) = config.window_pos {
+            builder = builder.with_position(egui::pos2(x, y));
+        }
+        if let Some([w, h]) = config.window_size {
+            builder = builder.with_inner_size(egui::vec2(w, h));
+        }
+    }
+    if config.save_window_state && config.window_maximized {
+        builder = builder.with_maximized(true);
+    }
+
+    let options = eframe::NativeOptions {
+        viewport: builder,
+        ..Default::default()
+    };
     eframe::run_native(
         "SaS2 Resalinated",
         options,
-        Box::new(|_cc| Ok(Box::new(ResalinatedApp::default()))),
+        Box::new(|_cc| Ok(Box::new(ResalinatedApp::with_config(config)))),
     )
 }
