@@ -403,14 +403,19 @@ pub fn assemble_frame_with_origin(
         idx: usize,
         parts: &[sas2_parser::char_def::Part],
         transforms: &mut Vec<Option<(f32, f32, f32)>>,
+        visiting: &mut Vec<bool>,
     ) -> (f32, f32, f32) {
         if let Some(t) = transforms[idx] {
             return t;
         }
         let part = &parts[idx];
-        if part.parent > -1 && (part.parent as usize) < parts.len() {
+        if part.parent > -1 && (part.parent as usize) < parts.len() && !visiting[idx] {
+            // Guard against parent cycles (e.g. caused by a part removal shifting indices)
+            // without this the recursion would overflow the stack.
+            visiting[idx] = true;
             let parent_idx = part.parent as usize;
-            let (px, py, prot) = compute_transform(parent_idx, parts, transforms);
+            let (px, py, prot) = compute_transform(parent_idx, parts, transforms, visiting);
+            visiting[idx] = false;
 
             let ox = part.parent_loc_offset.0;
             let oy = part.parent_loc_offset.1;
@@ -429,8 +434,10 @@ pub fn assemble_frame_with_origin(
         }
     }
 
+    // Track in-progress parts to break parent cycles before they overflow the stack.
+    let mut visiting = vec![false; frame.parts.len()];
     for i in 0..frame.parts.len() {
-        compute_transform(i, &frame.parts, &mut transforms);
+        compute_transform(i, &frame.parts, &mut transforms, &mut visiting);
     }
 
     // 5. Resolve per-part geometry

@@ -133,10 +133,15 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
 
         let enabled: Vec<(String, String)> = app
             .preset_manager
-            .installed_presets()
+            .enabled_presets()
             .iter()
-            .filter(|p| app.preset_manager.enabled_presets().contains(&p.folder_name))
-            .map(|p| (p.folder_name.clone(), p.display_name()))
+            .filter_map(|name| {
+                app.preset_manager
+                    .installed_presets()
+                    .iter()
+                    .find(|p| p.folder_name == *name)
+                    .map(|p| (p.folder_name.clone(), p.display_name()))
+            })
             .collect();
         egui::ScrollArea::vertical().show(ui, |ui| {
             for (i, (_, display)) in enabled.iter().enumerate() {
