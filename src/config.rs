@@ -44,24 +44,27 @@ pub struct ResalinatedConfig {
     pub dummy_drag_value: f32,
 
     /// External image editor command used by the Textures tab's "Open in editor" action.
-    /// When empty, the OS default handler for the PNG is used. The PNG path is passed as the
-    /// final argument (e.g. "gimp", "C:/Program Files/Aseprite/Aseprite.exe").
+    /// When empty, the OS default handler for the PNG is used. The PNG path is passed as the final argument (e.g. "/usr/bin/gimp", "C:/Program Files/Aseprite/Aseprite.exe").
     #[serde(default)]
     pub external_image_editor: String,
 
-    /// When true, new items (and items whose type changes) get the field set of their type,
-    /// copied from a vanilla item of that type. Preserves values for fields that already exist.
+    /// When true, new items (and items whose type changes) get the field set of their type, copied from a vanilla item of that type.
+    /// Preserves values for fields that already exist.
     #[serde(default = "default_true")]
     pub auto_type_fields: bool,
 
-    /// When true, saving a preset over an existing folder skips the overwrite
-    /// confirmation dialog and always overwrites.
+    /// When true, saving a preset over an existing folder skips the overwrite confirmation dialog and always overwrites.
     #[serde(default)]
     pub ignore_overwrite_warning: bool,
 
     /// Remember and restore the window position on startup.
     #[serde(default = "default_true")]
     pub save_window_position: bool,
+
+    /// On Wayland, run through XWayland so the window position can be saved.
+    /// Native Wayland does not let clients read their own position, this only matters on Wayland sessions and is off by default.
+    #[serde(default)]
+    pub force_x11_for_position: bool,
 
     /// Remember and restore the window state (maximized) on startup.
     #[serde(default = "default_true")]
@@ -102,6 +105,7 @@ impl Default for ResalinatedConfig {
             auto_type_fields: true,
             ignore_overwrite_warning: false,
             save_window_position: true,
+            force_x11_for_position: false,
             save_window_state: true,
             window_pos: None,
             window_size: None,

@@ -17,8 +17,7 @@ use crate::config::ResalinatedConfig;
 #[cfg(not(debug_assertions))]
 use hide_console::hide_console;
 
-/// Detects if the hardware is a Steam Deck (LCD or OLED) and forces
-/// winit to ignore X11 physical dimensions to prevent massive DPI scaling.
+/// Detects if the hardware is a Steam Deck (LCD or OLED) and forces winit to ignore X11 physical dimensions to prevent massive DPI scaling.
 fn apply_steam_deck_dpi_workaround() {
     #[cfg(target_os = "linux")]
     unsafe {
@@ -65,10 +64,24 @@ fn main() -> eframe::Result<()> {
         builder = builder.with_maximized(true);
     }
 
-    let options = eframe::NativeOptions {
+    let mut options = eframe::NativeOptions {
         viewport: builder,
         ..Default::default()
     };
+
+    // On Wayland, winit cannot query the window position, so position saving would never work.
+    // When the user opts in (force_x11_for_position) and an X11 display (XWayland) is available, force the X11 backend so position can be saved and restored.
+    if config.save_window_position
+        && config.force_x11_for_position
+        && std::env::var("WAYLAND_DISPLAY").is_ok()
+        && std::env::var("DISPLAY").is_ok()
+    {
+        options.event_loop_builder = Some(Box::new(|builder| {
+            use winit::platform::x11::EventLoopBuilderExtX11;
+            builder.with_x11();
+        }));
+    }
+
     eframe::run_native(
         "SaS2 Resalinated",
         options,
