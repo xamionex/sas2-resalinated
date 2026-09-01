@@ -310,6 +310,7 @@ impl MonsterTextureCache {
 // Sprites
 
 struct PartInfo {
+    part_index: usize,
     src_x: i32,
     src_y: i32,
     src_w: i32,
@@ -322,6 +323,22 @@ struct PartInfo {
     scale_x: f32,
     scale_y: f32,
     flip: i32,
+}
+
+/// Per-part render info for a composited frame, in canvas (image) pixel space.
+/// Used by the animation editor to draw a highlight box and gizmo on the selected part.
+#[derive(Clone, Copy)]
+pub struct PartRenderInfo {
+    /// Index into the frame's `parts` vector.
+    pub part_index: usize,
+    /// Axis-aligned bounds of the part in canvas pixel space.
+    pub min_x: f32,
+    pub min_y: f32,
+    pub max_x: f32,
+    pub max_y: f32,
+    /// Center of the part's bounds in canvas pixel space.
+    pub center_x: f32,
+    pub center_y: f32,
 }
 
 pub fn assemble_monster_sprite(
@@ -382,6 +399,16 @@ pub fn assemble_frame(
     assemble_frame_with_origin(frame, sheet, tex_meta).map(|(img, _)| img)
 }
 
+/// Like [`assemble_frame_with_origin`], but also returns per-part render info (bounds and center in canvas pixel space) so the animation editor can highlight the selected part and draw a gizmo.
+pub fn assemble_frame_with_parts(
+    frame: &sas2_parser::char_def::Frame,
+    sheet: &RgbaImage,
+    tex_meta: Option<&XTextureMeta>,
+) -> Option<(RgbaImage, (f32, f32), Vec<PartRenderInfo>)> {
+    let (img, origin, parts) = assemble_frame_inner(frame, sheet, tex_meta)?;
+    Some((img, origin, parts))
+}
+
 /// Like [`assemble_frame`], but also returns where the character-space origin (0,0) lands inside
 /// the cropped canvas, in pixels. The hitbox overlay uses this to align the box (which is centered
 /// on that same origin) with the rendered sprite at a 1:1 world-pixel scale.
@@ -390,6 +417,15 @@ pub fn assemble_frame_with_origin(
     sheet: &RgbaImage,
     tex_meta: Option<&XTextureMeta>,
 ) -> Option<(RgbaImage, (f32, f32))> {
+    let (img, origin, _) = assemble_frame_inner(frame, sheet, tex_meta)?;
+    Some((img, origin))
+}
+
+fn assemble_frame_inner(
+    frame: &sas2_parser::char_def::Frame,
+    sheet: &RgbaImage,
+    tex_meta: Option<&XTextureMeta>,
+) -> Option<(RgbaImage, (f32, f32), Vec<PartRenderInfo>)> {
     const BODY_MAX: i32 = 384;
 
     let sheet_w = sheet.width() as i32;
@@ -474,6 +510,7 @@ pub fn assemble_frame_with_origin(
         // Game natively authors facing right (face = 1). We do not negate cy here,
         // as XNA transforms are intrinsically Y-Down in the engine.
         parts.push(PartInfo {
+            part_index: i,
             src_x,
             src_y,
             src_w,
@@ -500,6 +537,8 @@ pub fn assemble_frame_with_origin(
     let mut max_x = f32::MIN;
     let mut max_y = f32::MIN;
 
+    let mut render_parts: Vec<PartRenderInfo> = Vec::with_capacity(parts.len());
+
     for p in &parts {
         let left = -p.anchor_x * p.scale_x;
         let right = (p.src_w as f32 - p.anchor_x) * p.scale_x;
@@ -508,14 +547,35 @@ pub fn assemble_frame_with_origin(
 
         let corners = [(left, top), (right, top), (right, bottom), (left, bottom)];
 
+        let mut pmin_x = f32::MAX;
+        let mut pmin_y = f32::MAX;
+        let mut pmax_x = f32::MIN;
+        let mut pmax_y = f32::MIN;
+
         for (dx, dy) in corners {
             let rx = dx * p.rot.cos() - dy * p.rot.sin();
             let ry = dx * p.rot.sin() + dy * p.rot.cos();
-            min_x = min_x.min(p.cx + rx);
-            min_y = min_y.min(p.cy + ry);
-            max_x = max_x.max(p.cx + rx);
-            max_y = max_y.max(p.cy + ry);
+            let wx = p.cx + rx;
+            let wy = p.cy + ry;
+            min_x = min_x.min(wx);
+            min_y = min_y.min(wy);
+            max_x = max_x.max(wx);
+            max_y = max_y.max(wy);
+            pmin_x = pmin_x.min(wx);
+            pmin_y = pmin_y.min(wy);
+            pmax_x = pmax_x.max(wx);
+            pmax_y = pmax_y.max(wy);
         }
+
+        render_parts.push(PartRenderInfo {
+            part_index: p.part_index,
+            min_x: pmin_x,
+            min_y: pmin_y,
+            max_x: pmax_x,
+            max_y: pmax_y,
+            center_x: (pmin_x + pmax_x) * 0.5,
+            center_y: (pmin_y + pmax_y) * 0.5,
+        });
     }
 
     let canvas_w = (max_x - min_x).ceil() as u32;
@@ -622,5 +682,15 @@ pub fn assemble_frame_with_origin(
     }
 
     // Character-space origin (0,0) maps to canvas pixel (-min_x, -min_y).
-    Some((canvas, (-min_x, -min_y)))
+    // Convert per-part bounds from character space to canvas pixel space.
+    for r in &mut render_parts {
+        r.min_x -= min_x;
+        r.min_y -= min_y;
+        r.max_x -= min_x;
+        r.max_y -= min_y;
+        r.center_x -= min_x;
+        r.center_y -= min_y;
+    }
+
+    Some((canvas, (-min_x, -min_y), render_parts))
 }

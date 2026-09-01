@@ -131,18 +131,13 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
             }
         });
 
-        let enabled: Vec<(String, String)> = app
-            .preset_manager
-            .enabled_presets()
-            .iter()
-            .filter_map(|name| {
-                app.preset_manager
-                    .installed_presets()
-                    .iter()
-                    .find(|p| p.folder_name == *name)
-                    .map(|p| (p.folder_name.clone(), p.display_name()))
-            })
-            .collect();
+        let enabled: Vec<(String, String)> = enabled_list(app);
+        // Guard against a stale selection index (e.g. after a reorder) pointing past the list.
+        if let Some(idx) = app.manager_selected_enabled {
+            if idx >= enabled.len() {
+                app.manager_selected_enabled = None;
+            }
+        }
         egui::ScrollArea::vertical().show(ui, |ui| {
             for (i, (_, display)) in enabled.iter().enumerate() {
                 if ui
@@ -191,16 +186,44 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
                 if ui.button("Up").clicked() {
                     if let Some(idx) = app.manager_selected_enabled {
                         if idx > 0 {
-                            app.preset_manager.move_preset(idx, idx - 1);
-                            app.manager_selected_enabled = Some(idx - 1);
+                            let name = enabled[idx].0.clone();
+                            let prev_name = enabled[idx - 1].0.clone();
+                            if let (Some(real), Some(prev_real)) = (
+                                app.preset_manager
+                                    .enabled_presets()
+                                    .iter()
+                                    .position(|n| *n == name),
+                                app.preset_manager
+                                    .enabled_presets()
+                                    .iter()
+                                    .position(|n| *n == prev_name),
+                            ) {
+                                // Swap with the adjacent visible preset (skipping any enabled presets that are not installed and therefore not shown).
+                                app.preset_manager.move_preset(real, prev_real);
+                                app.manager_selected_enabled = Some(idx - 1);
+                            }
                         }
                     }
                 }
                 if ui.button("Down").clicked() {
                     if let Some(idx) = app.manager_selected_enabled {
                         if idx + 1 < enabled.len() {
-                            app.preset_manager.move_preset(idx, idx + 1);
-                            app.manager_selected_enabled = Some(idx + 1);
+                            let name = enabled[idx].0.clone();
+                            let next_name = enabled[idx + 1].0.clone();
+                            if let (Some(real), Some(next_real)) = (
+                                app.preset_manager
+                                    .enabled_presets()
+                                    .iter()
+                                    .position(|n| *n == name),
+                                app.preset_manager
+                                    .enabled_presets()
+                                    .iter()
+                                    .position(|n| *n == next_name),
+                            ) {
+                                // Swap with the adjacent visible preset.
+                                app.preset_manager.move_preset(real, next_real);
+                                app.manager_selected_enabled = Some(idx + 1);
+                            }
                         }
                     }
                 }
@@ -226,4 +249,20 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
             }
         }
     });
+}
+
+/// Enabled presets in priority order, as (folder_name, display_name) pairs.
+/// Only presets that are actually installed are shown.
+fn enabled_list(app: &ResalinatedApp) -> Vec<(String, String)> {
+    app.preset_manager
+        .enabled_presets()
+        .iter()
+        .filter_map(|name| {
+            app.preset_manager
+                .installed_presets()
+                .iter()
+                .find(|p| p.folder_name == *name)
+                .map(|p| (p.folder_name.clone(), p.display_name()))
+        })
+        .collect()
 }

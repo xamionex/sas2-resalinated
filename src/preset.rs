@@ -165,6 +165,23 @@ impl PresetManager {
         self.load_enabled_presets();
         self.migrate_legacy_folders();
         self.ensure_vanilla_preset_exists();
+        self.prune_missing_enabled_presets();
+    }
+
+    /// Drop enabled presets that are no longer installed, and persist the cleaned list.
+    /// Keeps the config in sync so the enabled list never references a missing preset.
+    fn prune_missing_enabled_presets(&mut self) {
+        let installed: Vec<&str> = self
+            .installed_presets
+            .iter()
+            .map(|p| p.folder_name.as_str())
+            .collect();
+        let before = self.enabled_presets.len();
+        self.enabled_presets
+            .retain(|name| installed.contains(&name.as_str()));
+        if self.enabled_presets.len() != before {
+            self.save_enabled_presets();
+        }
     }
 
     /// Rename presets saved before the GUID folder scheme to their GUID folder

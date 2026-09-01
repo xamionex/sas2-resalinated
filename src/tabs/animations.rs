@@ -1,6 +1,6 @@
 use crate::app::ResalinatedApp;
 use eframe::egui;
-use egui::{Color32, Ui};
+use egui::{Color32, Pos2, Rect, Stroke, Ui};
 use sas2_parser::char_def::{KeyFrame, Part};
 use std::path::Path;
 
@@ -328,6 +328,12 @@ fn show_part_editor(app: &mut ResalinatedApp, ui: &mut Ui) {
 
     let selected_part = app.anim_editor.selected_part;
     ui.horizontal_wrapped(|ui| {
+        if ui
+            .selectable_label(selected_part.is_none(), "deselect")
+            .clicked()
+        {
+            app.anim_editor.selected_part = None;
+        }
         for i in 0..parts_len {
             if ui
                 .selectable_label(selected_part == Some(i), format!("{}", i))
@@ -379,6 +385,13 @@ fn show_part_editor(app: &mut ResalinatedApp, ui: &mut Ui) {
                 app.anim_editor.selected_part = Some(frame.parts.len() - 1);
                 dirty = true;
                 invalidate = true;
+            }
+
+            // Clamp a stale selection (e.g. after a part removal elsewhere) to a valid index.
+            if let Some(pi) = app.anim_editor.selected_part {
+                if pi >= frame.parts.len() {
+                    app.anim_editor.selected_part = None;
+                }
             }
         }
     }
@@ -540,7 +553,14 @@ fn show_preview_and_timeline(app: &mut ResalinatedApp, ui: &mut Ui) {
                     .max(0.1);
                 let size = egui::vec2(w as f32 * scale, h as f32 * scale);
                 egui::ScrollArea::both().id_salt("preview").show(ui, |ui| {
-                    ui.add(egui::Image::from_texture(handle).fit_to_exact_size(size));
+                    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+                    ui.painter().image(
+                        handle.id(),
+                        rect,
+                        Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0)),
+                        Color32::WHITE,
+                    );
+                    draw_part_overlay(app, ui, rect, scale);
                 });
             } else {
                 ui.colored_label(
@@ -553,6 +573,45 @@ fn show_preview_and_timeline(app: &mut ResalinatedApp, ui: &mut Ui) {
             ui.label("Select a keyframe with a valid frame reference to preview.");
         }
     }
+}
+
+/// Draw a highlight box and a center gizmo on the selected part of the preview frame.
+fn draw_part_overlay(app: &ResalinatedApp, ui: &mut Ui, rect: Rect, scale: f32) {
+    let Some(pi) = app.anim_editor.selected_part else {
+        return;
+    };
+    let Some(r) = app.anim_editor.part_render_info(pi) else {
+        return;
+    };
+    let painter = ui.painter();
+
+    let to_screen = |x: f32, y: f32| Pos2::new(rect.min.x + x * scale, rect.min.y + y * scale);
+
+    let box_rect = Rect::from_min_max(
+        to_screen(r.min_x, r.min_y),
+        to_screen(r.max_x, r.max_y),
+    );
+    painter.rect_filled(box_rect, 0.0, Color32::from_rgba_unmultiplied(60, 200, 255, 30));
+    painter.rect_stroke(
+        box_rect,
+        0.0,
+        Stroke::new(1.5_f32, Color32::from_rgb(60, 200, 255)),
+        egui::StrokeKind::Middle,
+    );
+
+    // Gizmo: crosshair at the part's center.
+    let c = to_screen(r.center_x, r.center_y);
+    let arm = 6.0_f32.max(4.0 * scale);
+    let gc = Color32::from_rgb(255, 220, 80);
+    painter.line_segment(
+        [Pos2::new(c.x - arm, c.y), Pos2::new(c.x + arm, c.y)],
+        Stroke::new(1.5_f32, gc),
+    );
+    painter.line_segment(
+        [Pos2::new(c.x, c.y - arm), Pos2::new(c.x, c.y + arm)],
+        Stroke::new(1.5_f32, gc),
+    );
+    painter.circle_stroke(c, 3.0_f32.max(2.0 * scale), Stroke::new(1.5_f32, gc));
 }
 
 fn default_part() -> Part {

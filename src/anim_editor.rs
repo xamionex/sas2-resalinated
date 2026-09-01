@@ -1,4 +1,4 @@
-use crate::atlas::assemble_frame;
+use crate::atlas::{assemble_frame_with_parts, PartRenderInfo};
 use egui::TextureHandle;
 use image::RgbaImage;
 use sas2_parser::char_def::{Animation, CharDef, KeyFrame};
@@ -36,6 +36,8 @@ pub struct AnimEditor {
     preview_handle: Option<TextureHandle>,
     preview_for: Option<usize>,
     preview_size: (u32, u32),
+    /// Per-part render info for the current preview frame, in canvas pixel space.
+    part_render: Vec<PartRenderInfo>,
 
     pub playing: bool,
     play_ticks: f32,
@@ -181,6 +183,7 @@ impl AnimEditor {
         }
         self.preview_for = Some(frame_idx);
         self.preview_handle = None;
+        self.part_render.clear();
 
         let (Some(cd), Some(sheet)) = (self.char_def.as_ref(), self.sheet.as_ref()) else {
             return;
@@ -188,7 +191,8 @@ impl AnimEditor {
         let Some(frame) = cd.frames.get(frame_idx) else {
             return;
         };
-        if let Some(img) = assemble_frame(frame, sheet, self.tex_meta.as_ref()) {
+        if let Some((img, _, parts)) = assemble_frame_with_parts(frame, sheet, self.tex_meta.as_ref())
+        {
             let (w, h) = (img.width(), img.height());
             let ci = egui::ColorImage::from_rgba_unmultiplied(
                 [w as usize, h as usize],
@@ -197,11 +201,20 @@ impl AnimEditor {
             self.preview_handle =
                 Some(ctx.load_texture("anim_preview", ci, Default::default()));
             self.preview_size = (w, h);
+            self.part_render = parts;
         }
     }
 
     pub fn preview(&self) -> Option<(&TextureHandle, (u32, u32))> {
         self.preview_handle.as_ref().map(|h| (h, self.preview_size))
+    }
+
+    /// Render info (bounds and center in canvas pixel space) for the part at `part_index`, if the current preview frame contains it.
+    pub fn part_render_info(&self, part_index: usize) -> Option<PartRenderInfo> {
+        self.part_render
+            .iter()
+            .find(|r| r.part_index == part_index)
+            .copied()
     }
 
     /// Invalidate the cached preview (call after editing parts/frames).
