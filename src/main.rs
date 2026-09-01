@@ -64,6 +64,7 @@ fn main() -> eframe::Result<()> {
         builder = builder.with_maximized(true);
     }
 
+    #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
     let mut options = eframe::NativeOptions {
         viewport: builder,
         ..Default::default()
@@ -71,6 +72,7 @@ fn main() -> eframe::Result<()> {
 
     // On Wayland, winit cannot query the window position, so position saving would never work.
     // When the user opts in (force_x11_for_position) and an X11 display (XWayland) is available, force the X11 backend so position can be saved and restored.
+    #[cfg(target_os = "linux")]
     if config.save_window_position
         && config.force_x11_for_position
         && std::env::var("WAYLAND_DISPLAY").is_ok()
