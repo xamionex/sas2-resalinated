@@ -247,8 +247,7 @@ pub struct ResalinatedApp {
     pub shop_selected_entry: Option<(usize, usize)>,
     /// Multi-selected shelf entries per merchant: npc index -> set of (node_idx, entry_idx).
     /// Keyed by npc so switching merchants does not carry the selection over.
-    pub shop_selected_entries_multi:
-        HashMap<usize, HashSet<(usize, usize)>>,
+    pub shop_selected_entries_multi: HashMap<usize, HashSet<(usize, usize)>>,
     /// Right-button gesture state for the merchant shelf grid.
     pub shop_shelf_grid_sel: crate::tabs::multisel::GridSel<(usize, usize)>,
     /// Last viewed merchant in the shop tab (to reset per-merchant gesture state).

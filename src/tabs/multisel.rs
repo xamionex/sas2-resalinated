@@ -32,12 +32,12 @@ pub fn upgrade_label(style: UpgradeStyle, level: i32) -> String {
     }
 }
 
-/// Paint the upgrade level badge in the bottom-right corner of the icon rect.
-pub fn paint_upgrade_badge(ui: &Ui, rect: Rect, style: UpgradeStyle, level: i32) {
-    if style == UpgradeStyle::Off || level <= 0 {
+/// Paint a small badge with `text` in a corner of `rect`.
+/// `corner`: 0 = bottom-right, 1 = bottom-left.
+fn paint_badge(ui: &egui::Ui, rect: Rect, text: &str, corner: u8) {
+    if text.is_empty() {
         return;
     }
-    let text = upgrade_label(style, level);
     let font_size = ui
         .style()
         .text_styles
@@ -48,13 +48,20 @@ pub fn paint_upgrade_badge(ui: &Ui, rect: Rect, style: UpgradeStyle, level: i32)
     let font = egui::FontId::proportional(font_size);
     let galley = ui
         .painter()
-        .layout_no_wrap(text, font, egui::Color32::WHITE);
+        .layout_no_wrap(text.to_string(), font, egui::Color32::WHITE);
     let pad = 2.0;
     let badge_size = galley.size() + egui::vec2(pad * 2.0, pad);
-    let badge_rect = Rect::from_min_max(
-        egui::pos2(rect.max.x - badge_size.x, rect.max.y - badge_size.y),
-        rect.max,
-    );
+    let badge_rect = if corner == 0 {
+        Rect::from_min_max(
+            egui::pos2(rect.max.x - badge_size.x, rect.max.y - badge_size.y),
+            rect.max,
+        )
+    } else {
+        Rect::from_min_max(
+            egui::pos2(rect.min.x, rect.max.y - badge_size.y),
+            egui::pos2(rect.min.x + badge_size.x, rect.max.y),
+        )
+    };
     let painter = ui.painter();
     painter.rect_filled(badge_rect, 3.0, egui::Color32::from_black_alpha(180));
     painter.rect_stroke(
@@ -68,6 +75,22 @@ pub fn paint_upgrade_badge(ui: &Ui, rect: Rect, style: UpgradeStyle, level: i32)
         galley,
         egui::Color32::WHITE,
     );
+}
+
+/// Paint the upgrade level badge in the bottom-right corner of the icon rect.
+pub fn paint_upgrade_badge(ui: &egui::Ui, rect: Rect, style: UpgradeStyle, level: i32) {
+    if style == UpgradeStyle::Off || level <= 0 {
+        return;
+    }
+    paint_badge(ui, rect, &upgrade_label(style, level), 0);
+}
+
+/// Paint the artifact seed badge in the bottom-left corner of the icon rect.
+pub fn paint_seed_badge(ui: &egui::Ui, rect: Rect, style: UpgradeStyle, seed: i32) {
+    if style == UpgradeStyle::Off {
+        return;
+    }
+    paint_badge(ui, rect, &seed.to_string(), 1);
 }
 
 /// Movement beyond this distance turns a press into a drag (pan or selection box).
@@ -97,7 +120,8 @@ pub struct GridSel<K> {
     pub last_target: HashSet<K>,
     /// Visible cells this frame: (screen rect, key).
     cells: Vec<(Rect, K)>,
-    /// Optional custom range resolver for shift+click (e.g. path-following on a positioned grid). `(anchor, target)` -> keys to select.
+    /// Optional custom range resolver for shift+click (e.g. path-following on a positioned grid).
+    /// `(anchor, target)` -> keys to select.
     pub range_fn: Option<Box<dyn Fn(&K, &K) -> Vec<K>>>,
 }
 
@@ -120,7 +144,7 @@ impl<K> Default for GridSel<K> {
 
 impl<K: Clone + Eq + std::hash::Hash> GridSel<K> {
     /// Call once per frame before laying out the grid. Tracks the primary-button gesture.
-    pub fn begin(&mut self, ui: &Ui) {
+    pub fn begin(&mut self, ui: &egui::Ui) {
         let (down, pressed, released, latest, shift, ctrl) = ui.input(|i| {
             (
                 i.pointer.button_down(PointerButton::Primary),
@@ -201,8 +225,9 @@ impl<K: Clone + Eq + std::hash::Hash> GridSel<K> {
         }
     }
 
-    /// Paint the selection box overlay. Call inside the scroll content UI so the box is clipped to the grid.
-    pub fn paint(&self, ui: &Ui) {
+    /// Paint the selection box overlay.
+    /// Call inside the scroll content UI so the box is clipped to the grid.
+    pub fn paint(&self, ui: &egui::Ui) {
         if !self.box_active {
             return;
         }
@@ -227,7 +252,7 @@ impl<K: Clone + Eq + std::hash::Hash> GridSel<K> {
 
     /// Call once per frame after the grid.
     /// Applies the click/range/toggle/box on primary-button release and clears the gesture.
-    pub fn end(&mut self, ui: &Ui, multi: &mut HashSet<K>, single: &mut Option<K>) {
+    pub fn end(&mut self, ui: &egui::Ui, multi: &mut HashSet<K>, single: &mut Option<K>) {
         let (released, latest) = ui.input(|i| {
             (
                 i.pointer.button_released(PointerButton::Primary),
@@ -285,7 +310,8 @@ impl<K: Clone + Eq + std::hash::Hash> GridSel<K> {
                     if let Some(k) = hit {
                         let clicked_idx = self.display_order.iter().position(|x| x == &k);
                         if shift {
-                            // Custom range resolver (e.g. skill tree paths) takes priority over the linear display-order range.
+                            // Custom range resolver (e.g. skill tree paths) takes
+                            // priority over the linear display-order range.
                             let range: Option<Vec<K>> = self
                                 .range_fn
                                 .as_ref()
@@ -364,7 +390,7 @@ impl<K: Clone + Eq + std::hash::Hash> GridSel<K> {
 }
 
 /// Scroll source for grids with a selection box: shift disables drag-panning so the box can be drawn, without shift, holding left click pans the view.
-pub fn grid_scroll_source(ui: &Ui) -> egui::containers::scroll_area::ScrollSource {
+pub fn grid_scroll_source(ui: &egui::Ui) -> egui::containers::scroll_area::ScrollSource {
     if ui.input(|i| i.modifiers.shift) {
         egui::containers::scroll_area::ScrollSource::SCROLL_BAR
             | egui::containers::scroll_area::ScrollSource::MOUSE_WHEEL
@@ -374,7 +400,7 @@ pub fn grid_scroll_source(ui: &Ui) -> egui::containers::scroll_area::ScrollSourc
 }
 
 /// Paint a green outline around a selected cell's icon button.
-pub fn paint_sel_outline(ui: &Ui, rect: Rect, selected: bool) {
+pub fn paint_sel_outline(ui: &egui::Ui, rect: Rect, selected: bool) {
     if selected {
         ui.painter().rect_stroke(
             rect,
@@ -382,6 +408,47 @@ pub fn paint_sel_outline(ui: &Ui, rect: Rect, selected: bool) {
             egui::Stroke::new(2.0_f32, egui::Color32::LIGHT_GREEN),
             egui::StrokeKind::Inside,
         );
+    }
+}
+
+/// Render a set of category checkboxes for the "Remove all by type" pickers.
+/// Up to 9 categories render as a vertical list, more than 9 render in a 3-column grid inside a bounded scroll area, so the window never grows past the screen and stays closable.
+pub fn category_checkboxes(ui: &mut Ui, cats: &[String], checked: &mut HashSet<String>) {
+    if cats.len() > 9 {
+        egui::ScrollArea::vertical()
+            .max_height(300.0)
+            .auto_shrink([false; 2])
+            .show(ui, |ui| {
+                egui::Grid::new("remove_all_cats")
+                    .spacing([16.0, 4.0])
+                    .num_columns(3)
+                    .show(ui, |ui| {
+                        for (i, cat) in cats.iter().enumerate() {
+                            let mut c = checked.contains(cat);
+                            if ui.checkbox(&mut c, cat).changed() {
+                                if c {
+                                    checked.insert(cat.clone());
+                                } else {
+                                    checked.remove(cat);
+                                }
+                            }
+                            if (i + 1) % 3 == 0 {
+                                ui.end_row();
+                            }
+                        }
+                    });
+            });
+    } else {
+        for cat in cats {
+            let mut c = checked.contains(cat);
+            if ui.checkbox(&mut c, cat).changed() {
+                if c {
+                    checked.insert(cat.clone());
+                } else {
+                    checked.remove(cat);
+                }
+            }
+        }
     }
 }
 

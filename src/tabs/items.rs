@@ -714,16 +714,11 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
                     }
                 }
                 cats.sort();
-                for cat in &cats {
-                    let mut checked = app.items_remove_all_types.contains(cat);
-                    if ui.checkbox(&mut checked, cat).changed() {
-                        if checked {
-                            app.items_remove_all_types.insert(cat.clone());
-                        } else {
-                            app.items_remove_all_types.remove(cat);
-                        }
-                    }
-                }
+                crate::tabs::multisel::category_checkboxes(
+                    ui,
+                    &cats,
+                    &mut app.items_remove_all_types,
+                );
                 ui.separator();
                 if ui
                     .add_enabled(
