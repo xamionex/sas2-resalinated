@@ -55,7 +55,8 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
 
     // Keep polling for external edits while this tab is open.
     if app.texture_editor.selected_texture.is_some() {
-        ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(500));
     }
 }
 
@@ -94,10 +95,15 @@ fn show_texture_list(app: &mut ResalinatedApp, ui: &mut Ui, game_path: &std::pat
 
     let indices = app.texture_editor.filtered_indices();
     let selected = app.texture_editor.selected_texture;
+    // Virtualized rows: only the rows visible in the scroll viewport are laid out each frame.
+    let row_height = ui
+        .text_style_height(&egui::TextStyle::Body)
+        .max(ui.spacing().interact_size.y);
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
-        .show(ui, |ui| {
-            for idx in indices {
+        .show_rows(ui, row_height, indices.len(), |ui, row_range| {
+            for i in row_range {
+                let idx = indices[i];
                 let name = app.texture_editor.texture_name(idx);
                 let cells = app
                     .texture_editor
@@ -107,7 +113,10 @@ fn show_texture_list(app: &mut ResalinatedApp, ui: &mut Ui, game_path: &std::pat
                     .map(|(_, t)| t.cells.iter().filter(|c| c.is_some()).count())
                     .unwrap_or(0);
                 let label = format!("{}  ({} cells)", name, cells);
-                if ui.selectable_label(selected == Some(idx), label).clicked() {
+                if ui
+                    .add(egui::Button::selectable(selected == Some(idx), label).truncate())
+                    .clicked()
+                {
                     app.texture_editor.selected_texture = Some(idx);
                     app.texture_editor.selected_cell = None;
                 }
@@ -159,7 +168,8 @@ fn show_sheet_viewer(app: &mut ResalinatedApp, ui: &mut Ui) {
                 .unwrap_or_default();
 
             // Map a source-space rect to screen-space.
-            let to_screen = |x: f32, y: f32| Pos2::new(rect.min.x + x * zoom, rect.min.y + y * zoom);
+            let to_screen =
+                |x: f32, y: f32| Pos2::new(rect.min.x + x * zoom, rect.min.y + y * zoom);
 
             for (i, cell) in cells.iter().enumerate() {
                 let Some(sprite) = cell else { continue };
@@ -182,9 +192,19 @@ fn show_sheet_viewer(app: &mut ResalinatedApp, ui: &mut Ui) {
                 // Origin marker.
                 let (ox, oy) = sprite.origin;
                 let op = to_screen(ox, oy);
-                let oc = if selected { Color32::YELLOW } else { Color32::from_rgb(255, 120, 0) };
-                painter.line_segment([op - Vec2::new(4.0, 0.0), op + Vec2::new(4.0, 0.0)], Stroke::new(1.5_f32, oc));
-                painter.line_segment([op - Vec2::new(0.0, 4.0), op + Vec2::new(0.0, 4.0)], Stroke::new(1.5_f32, oc));
+                let oc = if selected {
+                    Color32::YELLOW
+                } else {
+                    Color32::from_rgb(255, 120, 0)
+                };
+                painter.line_segment(
+                    [op - Vec2::new(4.0, 0.0), op + Vec2::new(4.0, 0.0)],
+                    Stroke::new(1.5_f32, oc),
+                );
+                painter.line_segment(
+                    [op - Vec2::new(0.0, 4.0), op + Vec2::new(0.0, 4.0)],
+                    Stroke::new(1.5_f32, oc),
+                );
             }
 
             // Click selects the topmost (smallest-area) cell under the pointer.
@@ -237,9 +257,13 @@ fn show_cell_editor(app: &mut ResalinatedApp, ui: &mut Ui, game_path: &std::path
         ui.text_edit_singleline(&mut app.texture_editor.rename_buffer);
         if ui.button("Rename").clicked() {
             let new_name = app.texture_editor.rename_buffer.clone();
-            match app.texture_editor.rename_texture(game_path, tex_idx, &new_name) {
+            match app
+                .texture_editor
+                .rename_texture(game_path, tex_idx, &new_name)
+            {
                 Ok(()) => {
-                    app.texture_editor.reload_sheet(ui.ctx(), game_path, tex_idx);
+                    app.texture_editor
+                        .reload_sheet(ui.ctx(), game_path, tex_idx);
                     app.texture_editor.status = Some(format!("Renamed to '{}'", new_name));
                 }
                 Err(e) => app.texture_editor.status = Some(e),
@@ -253,7 +277,8 @@ fn show_cell_editor(app: &mut ResalinatedApp, ui: &mut Ui, game_path: &std::path
         {
             match app.texture_editor.revert_name(game_path, tex_idx) {
                 Ok(()) => {
-                    app.texture_editor.reload_sheet(ui.ctx(), game_path, tex_idx);
+                    app.texture_editor
+                        .reload_sheet(ui.ctx(), game_path, tex_idx);
                     app.texture_editor.status = Some(format!("Reverted name to '{}'", orig));
                 }
                 Err(e) => app.texture_editor.status = Some(e),
@@ -303,12 +328,18 @@ fn show_cell_editor(app: &mut ResalinatedApp, ui: &mut Ui, game_path: &std::path
     if app.texture_editor.is_vanilla_texture(tex_idx) {
         if ui
             .button("Reset to Vanilla")
-            .on_hover_text("Restore vanilla cell metadata and delete the PNG override for this texture")
+            .on_hover_text(
+                "Restore vanilla cell metadata and delete the PNG override for this texture",
+            )
             .clicked()
         {
-            match app.texture_editor.reset_texture_to_vanilla(game_path, tex_idx) {
+            match app
+                .texture_editor
+                .reset_texture_to_vanilla(game_path, tex_idx)
+            {
                 Ok(()) => {
-                    app.texture_editor.reload_sheet(ui.ctx(), game_path, tex_idx);
+                    app.texture_editor
+                        .reload_sheet(ui.ctx(), game_path, tex_idx);
                     app.texture_editor.status = Some(format!("Reset '{}' to vanilla", name));
                 }
                 Err(e) => app.texture_editor.status = Some(e),
@@ -372,30 +403,32 @@ fn show_cell_editor(app: &mut ResalinatedApp, ui: &mut Ui, game_path: &std::path
 /// Numeric editors for one sprite cell. Returns true if any value changed.
 fn cell_fields(ui: &mut Ui, cell: &mut XSpriteRaw) -> bool {
     let mut changed = false;
-    egui::Grid::new("cell_fields").num_columns(2).show(ui, |ui| {
-        ui.label("src x");
-        changed |= ui.add(egui::DragValue::new(&mut cell.src_rect.0)).changed();
-        ui.end_row();
-        ui.label("src y");
-        changed |= ui.add(egui::DragValue::new(&mut cell.src_rect.1)).changed();
-        ui.end_row();
-        ui.label("width");
-        changed |= ui.add(egui::DragValue::new(&mut cell.src_rect.2)).changed();
-        ui.end_row();
-        ui.label("height");
-        changed |= ui.add(egui::DragValue::new(&mut cell.src_rect.3)).changed();
-        ui.end_row();
-        ui.label("origin x");
-        changed |= ui
-            .add(egui::DragValue::new(&mut cell.origin.0).speed(0.5))
-            .changed();
-        ui.end_row();
-        ui.label("origin y");
-        changed |= ui
-            .add(egui::DragValue::new(&mut cell.origin.1).speed(0.5))
-            .changed();
-        ui.end_row();
-    });
+    egui::Grid::new("cell_fields")
+        .num_columns(2)
+        .show(ui, |ui| {
+            ui.label("src x");
+            changed |= ui.add(egui::DragValue::new(&mut cell.src_rect.0)).changed();
+            ui.end_row();
+            ui.label("src y");
+            changed |= ui.add(egui::DragValue::new(&mut cell.src_rect.1)).changed();
+            ui.end_row();
+            ui.label("width");
+            changed |= ui.add(egui::DragValue::new(&mut cell.src_rect.2)).changed();
+            ui.end_row();
+            ui.label("height");
+            changed |= ui.add(egui::DragValue::new(&mut cell.src_rect.3)).changed();
+            ui.end_row();
+            ui.label("origin x");
+            changed |= ui
+                .add(egui::DragValue::new(&mut cell.origin.0).speed(0.5))
+                .changed();
+            ui.end_row();
+            ui.label("origin y");
+            changed |= ui
+                .add(egui::DragValue::new(&mut cell.origin.1).speed(0.5))
+                .changed();
+            ui.end_row();
+        });
     changed
 }
 

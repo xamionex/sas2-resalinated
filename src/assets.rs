@@ -1,11 +1,9 @@
 use std::path::{Path, PathBuf};
 
-/// Asset overrides (texture PNGs, master.zcm, char-def .zsx, custom icons) are edited in a single
-/// "working" folder, then snapshotted into a preset on Save and merged into the live game config
-/// only on Apply. This mirrors how loot/monster data already flows (working -> preset -> config).
+/// Asset overrides (texture PNGs, master.zcm, char-def .zsx, custom icons) are edited in a single "working" folder, then snapshotted into a preset on Save and merged into the live game config only on Apply.
+/// This mirrors how loot/monster data already flows (working -> preset -> config).
 ///
-/// Layout (identical under the working folder, each preset's `assets/` folder, and the live config
-/// folder so copies/merges are a straight mirror):
+/// Layout (identical under the working folder, each preset's `assets/` folder, and the live config folder so copies/merges are a straight mirror):
 ///   textures/<name>.png            texture pixel overrides
 ///   icons/<index>.png              custom item icons
 ///   Content/gfx/master.zcm         sprite-cell metadata

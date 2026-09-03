@@ -1,4 +1,4 @@
-use egui::{pos2, Rect, TextureHandle};
+use egui::{Rect, TextureHandle, pos2};
 use image::RgbaImage;
 use sas2_parser::char_def::CharDef;
 use sas2_parser::loot_catalog::LootDef;
@@ -287,7 +287,10 @@ impl MonsterTextureCache {
             load_texture_from_path(xnb.to_str().unwrap_or("")).ok()?
         };
 
-        let tex_meta = self.xtexture_meta.as_ref().and_then(|m| m.get(texture_name));
+        let tex_meta = self
+            .xtexture_meta
+            .as_ref()
+            .and_then(|m| m.get(texture_name));
         let (img, origin) = assemble_frame_with_origin(frame, &sheet, tex_meta)?;
         let (w, h) = (img.width(), img.height());
         let pixels = img.into_vec();
@@ -389,8 +392,8 @@ pub fn assemble_monster_sprite(
 
 /// Composite a single character frame onto a tightly-cropped RGBA canvas.
 ///
-/// Shared by the bestiary preview (idle frame) and the animation editor (any frame). Uses the
-/// XTexture cell rect/origin when available, otherwise falls back to a 128x128 grid layout.
+/// Shared by the bestiary preview (idle frame) and the animation editor (any frame).
+/// Uses the XTexture cell rect/origin when available, otherwise falls back to a 128x128 grid layout.
 pub fn assemble_frame(
     frame: &sas2_parser::char_def::Frame,
     sheet: &RgbaImage,
@@ -409,9 +412,8 @@ pub fn assemble_frame_with_parts(
     Some((img, origin, parts))
 }
 
-/// Like [`assemble_frame`], but also returns where the character-space origin (0,0) lands inside
-/// the cropped canvas, in pixels. The hitbox overlay uses this to align the box (which is centered
-/// on that same origin) with the rendered sprite at a 1:1 world-pixel scale.
+/// Like [`assemble_frame`], but also returns where the character-space origin (0,0) lands inside the cropped canvas, in pixels.
+/// The hitbox overlay uses this to align the box (which is centered on that same origin) with the rendered sprite at a 1:1 world-pixel scale.
 pub fn assemble_frame_with_origin(
     frame: &sas2_parser::char_def::Frame,
     sheet: &RgbaImage,
@@ -446,8 +448,7 @@ fn assemble_frame_inner(
         }
         let part = &parts[idx];
         if part.parent > -1 && (part.parent as usize) < parts.len() && !visiting[idx] {
-            // Guard against parent cycles (e.g. caused by a part removal shifting indices)
-            // without this the recursion would overflow the stack.
+            // Guard against parent cycles (e.g. caused by a part removal shifting indices) without this the recursion would overflow the stack.
             visiting[idx] = true;
             let parent_idx = part.parent as usize;
             let (px, py, prot) = compute_transform(parent_idx, parts, transforms, visiting);
@@ -507,8 +508,7 @@ fn assemble_frame_inner(
 
         let (cx, cy, rot) = transforms[i].unwrap();
 
-        // Game natively authors facing right (face = 1). We do not negate cy here,
-        // as XNA transforms are intrinsically Y-Down in the engine.
+        // Game natively authors facing right (face = 1). We do not negate cy here, as XNA transforms are intrinsically Y-Down in the engine.
         parts.push(PartInfo {
             part_index: i,
             src_x,

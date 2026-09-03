@@ -3,8 +3,8 @@ use std::fs;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use zip::write::FileOptions;
 use zip::ZipWriter;
+use zip::write::FileOptions;
 
 /// Metadata stored inside each preset's folder.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -13,19 +13,18 @@ pub struct PresetMeta {
     pub version: String,
     pub author: String,
     pub description: String,
-    /// Editor version that last saved this preset. None for presets saved
-    /// before this field existed.
+    /// Editor version that last saved this preset.
+    /// None for presets saved before this field existed.
     #[serde(default)]
     pub editor_version: Option<String>,
-    /// True when the user manually chose the folder name (override). Such
-    /// presets are never auto-renamed by the GUID migration.
+    /// True when the user manually chose the folder name (override).
+    /// Such presets are never auto-renamed by the GUID migration.
     #[serde(default)]
     pub folder_override: bool,
 }
 
-/// Make a folder name valid on both Windows and Linux: replace forbidden
-/// characters, strip trailing dots/spaces, prefix Windows reserved device
-/// names, and cap the length. Never returns an empty string.
+/// Make a folder name valid on both Windows and Linux: replace forbidden characters, strip trailing dots/spaces, prefix Windows reserved device names, and cap the length.
+/// Never returns an empty string.
 pub fn sanitize_folder_name(name: &str) -> String {
     let mut out: String = name
         .chars()
@@ -43,8 +42,8 @@ pub fn sanitize_folder_name(name: &str) -> String {
     }
     let stem = out.split('.').next().unwrap_or("").to_uppercase();
     const RESERVED: [&str; 22] = [
-        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7",
-        "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+        "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
     ];
     if RESERVED.contains(&stem.as_str()) {
         out.insert(0, '_');
@@ -71,10 +70,8 @@ fn fnv1a64(data: &[u8]) -> u64 {
 }
 
 /// Folder name for a preset, derived from its author, name and version.
-/// The readable prefix keeps the Manager list recognizable; the 64-bit hash
-/// of the triple is the GUID that makes the folder unique per preset identity.
-/// The same author/name/version always maps to the same folder (re-saving
-/// updates it), while different packs never collide.
+/// The readable prefix keeps the Manager list recognizable; the 64-bit hash of the triple is the GUID that makes the folder unique per preset identity.
+/// The same author/name/version always maps to the same folder (re-saving updates it), while different packs never collide.
 pub fn guid_folder_name(meta: &PresetMeta) -> String {
     let slug = |s: &str| {
         let mut out = sanitize_folder_name(s);
@@ -184,10 +181,10 @@ impl PresetManager {
         }
     }
 
-    /// Rename presets saved before the GUID folder scheme to their GUID folder
-    /// name. Runs automatically so users never notice the change. Presets with
-    /// a manually chosen folder (override) and the vanilla preset are kept as
-    /// they are. The enabled list is rewritten with the new names.
+    /// Rename presets saved before the GUID folder scheme to their GUID folder name.
+    /// Runs automatically so users never notice the change.
+    /// Presets with a manually chosen folder (override) and the vanilla preset are kept as they are.
+    /// The enabled list is rewritten with the new names.
     fn migrate_legacy_folders(&mut self) {
         let mut renamed: Vec<(String, String)> = Vec::new();
         for preset in &self.installed_presets {
@@ -206,8 +203,7 @@ impl PresetManager {
             let old_dir = self.presets_dir.join(old);
             let new_dir = self.presets_dir.join(new);
             if new_dir.exists() {
-                // A preset with the same identity already exists at the GUID
-                // name; the legacy copy is redundant, so drop it.
+                // A preset with the same identity already exists at the GUID name; the legacy copy is redundant, so drop it.
                 let _ = fs::remove_dir_all(&old_dir);
             } else if fs::rename(&old_dir, &new_dir).is_err() {
                 continue;
@@ -654,7 +650,8 @@ mod tests {
     #[test]
     fn old_meta_parses_with_defaults() {
         // A preset.json written before editor_version/folder_override existed.
-        let json = r#"{"name":"Balance","version":"1.0.0","author":"Ska Studios","description":"d"}"#;
+        let json =
+            r#"{"name":"Balance","version":"1.0.0","author":"Ska Studios","description":"d"}"#;
         let meta: PresetMeta = serde_json::from_str(json).unwrap();
         assert_eq!(meta.editor_version, None);
         assert!(!meta.folder_override);
@@ -695,9 +692,9 @@ mod tests {
         let mut zip = ZipWriter::new(file);
         let options: FileOptions<'_, '_, ()> =
             FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
-        // Windows Explorer style: no explicit directory entries, and the old
-        // app wrote preset.json without editor_version/folder_override.
-        zip.start_file("My Old Preset/preset.json", options).unwrap();
+        // Windows Explorer style: no explicit directory entries, and the old app wrote preset.json without editor_version/folder_override.
+        zip.start_file("My Old Preset/preset.json", options)
+            .unwrap();
         zip.write_all(
             br#"{"name":"Balance","version":"1.0.0","author":"Ska Studios","description":"d"}"#,
         )
@@ -769,7 +766,11 @@ mod tests {
             fs::read(vanilla_dir.join("loot.zls")).unwrap(),
             b"vanilla-loot"
         );
-        assert!(manager.enabled_presets.contains(&"Vanilla (Base)".to_string()));
+        assert!(
+            manager
+                .enabled_presets
+                .contains(&"Vanilla (Base)".to_string())
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -825,7 +826,11 @@ mod tests {
         assert!(!names.contains(&"My Cool Preset".to_string()));
         assert!(names.contains(&"Custom Name".to_string()));
         assert!(manager.enabled_presets.contains(&guid_folder_name(&legacy)));
-        assert!(!manager.enabled_presets.contains(&"My Cool Preset".to_string()));
+        assert!(
+            !manager
+                .enabled_presets
+                .contains(&"My Cool Preset".to_string())
+        );
         assert!(manager.enabled_presets.contains(&"Custom Name".to_string()));
         let _ = fs::remove_dir_all(&dir);
     }

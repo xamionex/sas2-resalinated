@@ -1,7 +1,5 @@
 use crate::app::ResalinatedApp;
-use crate::artifact_boost::{
-    artifact_field_count, artifact_field_info, ArtifactBoostRange,
-};
+use crate::artifact_boost::{ArtifactBoostRange, artifact_field_count, artifact_field_info};
 use crate::tabs::utils::CHANGED_COLOR;
 use eframe::egui;
 use egui::Ui;

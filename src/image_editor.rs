@@ -1,6 +1,6 @@
 use egui::TextureHandle;
-use image::imageops::FilterType;
 use image::RgbaImage;
+use image::imageops::FilterType;
 use sas2_parser::xnb_loader::load_texture_from_path;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -8,12 +8,9 @@ use std::path::{Path, PathBuf};
 /// Editor state for the Images tab: add custom item icons so custom items don't reuse a vanilla
 /// icon.
 ///
-/// Vanilla icons live in `items.xnb` (a 32-col grid of 128x128 tiles, `LootDef.img`). That atlas
-/// can't grow (a taller texture exceeds the runtime max), so custom icons live in a SEPARATE atlas
-/// (`custom_items.png`) at their own local indices; an item references one with
-/// `img = vanilla_capacity + local_index`, and the loader redirects those draws to the custom
-/// atlas. Icons are edited in the working-assets folder and only composited into the live config
-/// (`textures/custom_items.png`) on Apply.
+/// Vanilla icons live in `items.xnb` (a 32-col grid of 128x128 tiles, `LootDef.img`).
+/// That atlas can't grow (a taller texture exceeds the runtime max), so custom icons live in a SEPARATE atlas (`custom_items.png`) at their own local indices, an item references one with `img = vanilla_capacity + local_index`, and the loader redirects those draws to the custom atlas.
+/// Icons are edited in the working-assets folder and only composited into the live config (`textures/custom_items.png`) on Apply.
 const COLS: u32 = 32;
 const TILE: u32 = 128;
 
@@ -118,7 +115,10 @@ pub fn icon_indices(dir: &Path) -> Vec<i32> {
         for e in entries.flatten() {
             let p = e.path();
             if p.extension().and_then(|x| x.to_str()) == Some("png") {
-                if let Some(i) = p.file_stem().and_then(|s| s.to_str()).and_then(|s| s.parse().ok())
+                if let Some(i) = p
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .and_then(|s| s.parse().ok())
                 {
                     out.push(i);
                 }
@@ -128,8 +128,8 @@ pub fn icon_indices(dir: &Path) -> Vec<i32> {
     out
 }
 
-/// Composite `icons_dir/<local>.png` files into a single custom atlas PNG (32-col grid, 128px
-/// tiles) at `dest`. Used at Apply time on the merged icon set. No-op (removes dest) if empty.
+/// Composite `icons_dir/<local>.png` files into a single custom atlas PNG (32-col grid, 128px tiles) at `dest`.
+/// Used at Apply time on the merged icon set. No-op (removes dest) if empty.
 pub fn build_custom_atlas(icons_dir: &Path, dest: &Path) -> Result<(), String> {
     let mut indices = icon_indices(icons_dir);
     indices.sort();

@@ -107,11 +107,10 @@ fn apply_actions(app: &mut ResalinatedApp, actions: Vec<ShopAction>) {
             ShopAction::RemoveEntry { npc, node, entry } => {
                 if let Some(n) = dialog.npcs.get_mut(npc) {
                     if let Some(nd) = n.nodes.get_mut(node) {
-                        let mut entries: Vec<(String, String)> =
-                            split_script(&nd.store_script)
-                                .iter()
-                                .map(|l| parse_entry(l))
-                                .collect();
+                        let mut entries: Vec<(String, String)> = split_script(&nd.store_script)
+                            .iter()
+                            .map(|l| parse_entry(l))
+                            .collect();
                         if entry < entries.len() {
                             entries.remove(entry);
                             nd.store_script = join_script(&entries);
@@ -127,11 +126,10 @@ fn apply_actions(app: &mut ResalinatedApp, actions: Vec<ShopAction>) {
             } => {
                 if let Some(n) = dialog.npcs.get_mut(npc) {
                     if let Some(nd) = n.nodes.get_mut(node) {
-                        let mut entries: Vec<(String, String)> =
-                            split_script(&nd.store_script)
-                                .iter()
-                                .map(|l| parse_entry(l))
-                                .collect();
+                        let mut entries: Vec<(String, String)> = split_script(&nd.store_script)
+                            .iter()
+                            .map(|l| parse_entry(l))
+                            .collect();
                         let new_idx = entry as i32 + delta;
                         if new_idx >= 0 && new_idx < entries.len() as i32 {
                             let e = entries.remove(entry);
@@ -149,11 +147,10 @@ fn apply_actions(app: &mut ResalinatedApp, actions: Vec<ShopAction>) {
             } => {
                 if let Some(n) = dialog.npcs.get_mut(npc) {
                     if let Some(nd) = n.nodes.get_mut(node) {
-                        let mut entries: Vec<(String, String)> =
-                            split_script(&nd.store_script)
-                                .iter()
-                                .map(|l| parse_entry(l))
-                                .collect();
+                        let mut entries: Vec<(String, String)> = split_script(&nd.store_script)
+                            .iter()
+                            .map(|l| parse_entry(l))
+                            .collect();
                         if entry < entries.len() {
                             entries[entry].0 = flag;
                             nd.store_script = join_script(&entries);
@@ -195,7 +192,7 @@ fn apply_actions(app: &mut ResalinatedApp, actions: Vec<ShopAction>) {
 }
 
 /// Draw one item in a grid cell: icon button + name + optional price line.
-/// Returns true when the cell was clicked.
+/// Returns the button response (clicked state is read by the caller).
 fn draw_item_cell(
     ui: &mut Ui,
     app: &ResalinatedApp,
@@ -205,7 +202,7 @@ fn draw_item_cell(
     token_cost: i32,
     icon_size: f32,
     selected: bool,
-) -> bool {
+) -> egui::Response {
     let def = app
         .working_catalog
         .as_ref()
@@ -218,7 +215,6 @@ fn draw_item_cell(
         &app.image_editor,
     );
     let btn_w = response.rect.width();
-    let clicked = response.clicked();
     ui.set_max_width(btn_w);
     crate::tabs::items::add_item_label(ui, display, app.config.grid_font_size, selected);
     let price = if token_cost > 0 {
@@ -227,12 +223,12 @@ fn draw_item_cell(
         format!("{} silver", cost)
     };
     ui.label(egui::RichText::new(price));
-    clicked
+    response
 }
 
 /// Render a searchable item grid (like the Items tab) with selectable cells.
 /// Items are grouped by type-subtype category, exactly like the Items tab.
-/// Clicking a cell calls `on_select` with the item name.
+/// Selection is handled by the shared gesture helper (click / ctrl+click / shift+click / box).
 /// `is_modified` decides whether an item counts as "modified" for the filter.
 fn item_grid_selectable(
     ui: &mut Ui,
@@ -243,12 +239,12 @@ fn item_grid_selectable(
     selected: &Option<String>,
     show_only_modified: bool,
     is_modified: impl Fn(&ResalinatedApp, &str) -> bool,
-    on_select: impl Fn(&mut ResalinatedApp, &str),
 ) {
     ui.horizontal(|ui| {
         ui.label("Search:");
         ui.text_edit_singleline(search);
         ui.checkbox(&mut app.shop_show_only_modified, "Show only modified");
+        crate::tabs::multisel::mouse_help_button(ui, &[]);
     });
     let filter = search.to_lowercase();
     let filtered: Vec<&(String, String, f32, i32, i32, i32)> = items
@@ -264,8 +260,10 @@ fn item_grid_selectable(
         .collect();
 
     // Group by type-subtype category, like the Items tab.
-    let mut grouped: std::collections::BTreeMap<String, Vec<&(String, String, f32, i32, i32, i32)>> =
-        std::collections::BTreeMap::new();
+    let mut grouped: std::collections::BTreeMap<
+        String,
+        Vec<&(String, String, f32, i32, i32, i32)>,
+    > = std::collections::BTreeMap::new();
     for item in filtered {
         let cat = format!(
             "{} - {}",
@@ -275,19 +273,87 @@ fn item_grid_selectable(
         grouped.entry(cat).or_default().push(item);
     }
 
+    // Selection gesture state (click / ctrl+click / shift+click / shift+drag box).
+    let mut gsel = std::mem::take(&mut app.shop_all_grid_sel);
+    gsel.begin(ui);
+
+    // Full display order (all filtered items, not just visible ones) so shift+click ranges work across scrolled-out items.
+    gsel.display_order.clear();
+    for (_, entries) in &grouped {
+        for (name, _, _, _, _, _) in entries {
+            gsel.display_order.push(name.clone());
+        }
+    }
+
     egui::ScrollArea::both()
+        .scroll_source(crate::tabs::multisel::grid_scroll_source(ui))
         .auto_shrink([false; 2])
-        .show(ui, |ui| {
+        .show_viewport(ui, |ui, viewport| {
+            // Only items whose x-range intersects the visible viewport are laid out each frame.
+            // Culled items still advance the grid cursor via allocate_space with the exact cell size, so positions, row heights and the scrollbar stay exact while the widget count stays proportional to the viewport.
+            let label_h = ui.fonts_mut(|f| {
+                f.row_height(&egui::FontId::proportional(app.config.grid_font_size))
+            });
+            let spacing_y = ui.spacing().item_spacing.y;
+            let pad_x = 2.0 * ui.spacing().button_padding.x;
+            let pad_y = 2.0 * ui.spacing().button_padding.y;
+            let overscan = 3.0 * (icon_size + pad_x);
+            let vp_min = viewport.min.x - overscan;
+            let vp_max = viewport.max.x + overscan;
+
             for (cat, entries) in grouped {
                 ui.style_mut().interaction.selectable_labels = false;
-                ui.label(egui::RichText::new(&cat).strong().size(app.config.category_font_size));
+                ui.label(
+                    egui::RichText::new(&cat)
+                        .strong()
+                        .size(app.config.category_font_size),
+                );
                 egui::Grid::new(("shop_item_grid", cat))
                     .spacing([8.0, 8.0])
                     .show(ui, |ui| {
+                        let mut x = 0.0f32;
                         for (name, display, cost, token_cost, _, _) in entries {
+                            let def = app.working_catalog.as_ref().and_then(|cat| {
+                                cat.by_name.get(name).and_then(|&i| cat.loot_defs.get(i))
+                            });
+                            let has_icon = def
+                                .and_then(|d| app.item_atlas.as_ref().and_then(|a| a.icon_uv(d)))
+                                .is_some()
+                                || def.is_some_and(|d| {
+                                    let cap = app.image_editor.capacity as i32;
+                                    cap > 0
+                                        && d.img >= cap
+                                        && app
+                                            .image_editor
+                                            .icons
+                                            .iter()
+                                            .any(|(local, _)| *local == d.img - cap)
+                                });
+                            let word_count = display.split_whitespace().count();
+                            // Image buttons are icon_size + button frame margins wide; placeholders are icon_size.
+                            let item_w = if has_icon {
+                                icon_size + pad_x
+                            } else {
+                                icon_size
+                            };
+                            let item_h = if has_icon {
+                                icon_size + pad_y
+                            } else {
+                                icon_size
+                            } + word_count as f32 * (label_h + spacing_y);
+                            let start = x;
+                            let end = x + item_w;
+                            x = end + 8.0;
+                            if end < vp_min || start > vp_max {
+                                ui.allocate_space(egui::vec2(item_w, item_h));
+                                continue;
+                            }
+
                             ui.vertical(|ui| {
-                                let is_sel = selected.as_deref() == Some(name.as_str());
-                                let clicked = draw_item_cell(
+                                let is_sel = selected.as_deref() == Some(name.as_str())
+                                    || app.shop_all_selected_multi.contains(name.as_str())
+                                    || gsel.is_box_hit(name);
+                                let response = draw_item_cell(
                                     ui,
                                     app,
                                     name,
@@ -297,14 +363,22 @@ fn item_grid_selectable(
                                     icon_size,
                                     is_sel,
                                 );
-                                if clicked {
-                                    on_select(app, name);
-                                }
+                                crate::tabs::multisel::paint_sel_outline(ui, response.rect, is_sel);
+                                gsel.cell(response.rect, name.clone());
                             });
                         }
                     });
                 ui.add_space(8.0);
             }
+
+            gsel.update_target();
+            gsel.paint(ui);
+            gsel.end(
+                ui,
+                &mut app.shop_all_selected_multi,
+                &mut app.shop_all_selected,
+            );
+            app.shop_all_grid_sel = gsel;
         });
 }
 
@@ -372,11 +446,24 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
         .collect();
 
     // Location label for a merchant: "map (x, y)" when the game places it.
-    let location_of = |locations: &HashMap<String, (String, f32, f32)>, name: &str| -> Option<String> {
-        locations.get(name).map(|(map, x, y)| {
-            format!("{} ({:.0}, {:.0})", map, x, y)
-        })
+    let location_of =
+        |locations: &HashMap<String, (String, f32, f32)>, name: &str| -> Option<String> {
+            locations
+                .get(name)
+                .map(|(map, x, y)| format!("{} ({:.0}, {:.0})", map, x, y))
+        };
+
+    // Track the previously viewed merchant so the shelf gesture anchor can be reset when switching shops (range anchors are per-merchant).
+    let prev_npc = app.shop_last_npc;
+    app.shop_last_npc = if app.shop_all_shops {
+        None
+    } else {
+        app.shop_selected_npc
     };
+    if prev_npc != app.shop_last_npc {
+        app.shop_shelf_grid_sel.anchor = None;
+        app.shop_shelf_grid_sel.reset_gesture();
+    }
 
     // Heading with the merchant picker inlined; the picker wraps to multiple lines so it never runs off-screen.
     ui.horizontal(|ui| {
@@ -415,9 +502,9 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
     ui.add(
         egui::Label::new(
             egui::RichText::new(
-                "Edit each merchant's inventory (the store script in their dialog). Buy price comes \
-                 from the item's Cost field; currency is silver, or tokens when the item has a token \
-                 cost. An optional flag gates an entry behind progression (flag:item).",
+                "Edit each merchant's inventory (the store script in their dialog). \
+                Buy price comes from the item's Cost field; currency is silver, or tokens when the item has a token cost. \
+                An optional flag gates an entry behind progression (flag:item).",
             )
             ,
         )
@@ -435,8 +522,8 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
             ui.heading("All Shops");
             ui.label(
                 egui::RichText::new(
-                    "Items selected here are appended to every merchant's buy menu. An optional \
-                     flag gates the item behind progression.",
+                    "Items selected here are appended to every merchant's buy menu. \
+                    An optional flag gates the item behind progression.",
                 )
                 ,
             );
@@ -449,28 +536,64 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
                 .max_size(ui.available_width() * 0.5)
                 .show_inside(ui, |ui| {
                     ui.set_min_width(ui.available_width());
-                    ui.heading("Selected Item");
-                    let Some(name) = app.shop_all_selected.clone() else {
-                        ui.label("Click an item to edit it.");
-                        return;
+                    // With a multi-selection active, hide the single-item header so it doesn't give the false impression that edits apply to one item.
+                    let multi_count = app.shop_all_selected_multi.len();
+                    let mut name = String::new();
+                    let mut cost = 0.0f32;
+                    let mut token_cost = 0i32;
+                    if multi_count > 1 {
+                        ui.heading("Edit Selected Items");
+                        ui.label(format!("{} items selected", multi_count));
+                        ui.separator();
+                        // Seed the cost/token fields from the first selected item so the drag values show something meaningful instead of 0.
+                        if let Some(first) = app.shop_all_selected_multi.iter().next() {
+                            if let Some((_, c, tc, _, _)) = item_info.get(first) {
+                                cost = *c;
+                                token_cost = *tc;
+                            }
+                        }
+                    } else {
+                        ui.heading("Selected Item");
+                        let Some(n) = app.shop_all_selected.clone() else {
+                            ui.label("Click an item to edit it.");
+                            return;
+                        };
+                        let Some((display, c, tc, _, _)) = item_info.get(&n) else {
+                            ui.label("Invalid selection.");
+                            return;
+                        };
+                        name = n;
+                        cost = *c;
+                        token_cost = *tc;
+                        ui.label(egui::RichText::new(display).strong());
+                        ui.label(format!("({})", name));
+                        ui.separator();
+                    }
+                    // The sell toggle applies to every selected item, not just the single selection.
+                    let sell_targets: Vec<String> = if multi_count > 1 {
+                        app.shop_all_selected_multi.iter().cloned().collect()
+                    } else {
+                        vec![name.clone()]
                     };
-                    let Some((display, cost, token_cost, _, _)) = item_info.get(&name) else {
-                        ui.label("Invalid selection.");
-                        return;
-                    };
-                    ui.label(egui::RichText::new(display).strong());
-                    ui.label(format!("({})", name));
-                    ui.separator();
-                    let mut sell = app.shop_additions.contains_key(&name);
+                    let all_selling = sell_targets
+                        .iter()
+                        .all(|n| app.shop_additions.contains_key(n));
+                    let mut sell = all_selling;
                     if ui
                         .checkbox(&mut sell, "Sell in all shops")
-                        .on_hover_text("Append this item to every merchant's buy menu")
+                        .on_hover_text(if multi_count > 1 {
+                            "Append every right-click selected item to every merchant's buy menu"
+                        } else {
+                            "Append this item to every merchant's buy menu"
+                        })
                         .changed()
                     {
-                        if sell {
-                            app.shop_additions.entry(name.clone()).or_default();
-                        } else {
-                            app.shop_additions.remove(&name);
+                        for n in &sell_targets {
+                            if sell {
+                                app.shop_additions.entry(n.clone()).or_default();
+                            } else {
+                                app.shop_additions.remove(n);
+                            }
                         }
                     }
                     if sell {
@@ -497,7 +620,7 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
                         vc.by_name.get(&name).map(|&i| &vc.loot_defs[i])
                     });
                     let cost_changed = vanilla_c
-                        .map(|v| (v.cost - *cost).abs() > 0.001)
+                        .map(|v| (v.cost - cost).abs() > 0.001)
                         .unwrap_or(true);
                     ui.horizontal(|ui| {
                         if cost_changed {
@@ -505,29 +628,34 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
                         } else {
                             ui.label("Cost (silver):");
                         }
-                        let mut new_cost = *cost;
+                        let mut new_cost = cost;
                         if ui
                             .add(egui::DragValue::new(&mut new_cost).speed(1.0))
                             .changed()
                         {
-                            actions.push(ShopAction::SetCost {
-                                item: name.clone(),
-                                cost: new_cost,
-                            });
+                            // Apply to every selected item, not just the single selection.
+                            for n in &sell_targets {
+                                actions.push(ShopAction::SetCost {
+                                    item: n.clone(),
+                                    cost: new_cost,
+                                });
+                            }
                         }
                         if cost_changed {
                             if let Some(v) = vanilla_c {
                                 if ui.button("↺").clicked() {
-                                    actions.push(ShopAction::SetCost {
-                                        item: name.clone(),
-                                        cost: v.cost,
-                                    });
+                                    for n in &sell_targets {
+                                        actions.push(ShopAction::SetCost {
+                                            item: n.clone(),
+                                            cost: v.cost,
+                                        });
+                                    }
                                 }
                             }
                         }
                     });
                     let token_changed = vanilla_c
-                        .map(|v| v.token_cost != *token_cost)
+                        .map(|v| v.token_cost != token_cost)
                         .unwrap_or(true);
                     ui.horizontal(|ui| {
                         if token_changed {
@@ -535,20 +663,24 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
                         } else {
                             ui.label("Token cost:");
                         }
-                        let mut new_token = *token_cost;
+                        let mut new_token = token_cost;
                         if ui.add(egui::DragValue::new(&mut new_token)).changed() {
-                            actions.push(ShopAction::SetTokenCost {
-                                item: name.clone(),
-                                token_cost: new_token,
-                            });
+                            for n in &sell_targets {
+                                actions.push(ShopAction::SetTokenCost {
+                                    item: n.clone(),
+                                    token_cost: new_token,
+                                });
+                            }
                         }
                         if token_changed {
                             if let Some(v) = vanilla_c {
                                 if ui.button("↺").clicked() {
-                                    actions.push(ShopAction::SetTokenCost {
-                                        item: name.clone(),
-                                        token_cost: v.token_cost,
-                                    });
+                                    for n in &sell_targets {
+                                        actions.push(ShopAction::SetTokenCost {
+                                            item: n.clone(),
+                                            token_cost: v.token_cost,
+                                        });
+                                    }
                                 }
                             }
                         }
@@ -565,6 +697,23 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
             egui::CentralPanel::default()
                 .frame(egui::Frame::central_panel(&ui.style()).inner_margin(2.0))
                 .show_inside(ui, |ui| {
+                    // Multi-select toolbar for the All Shops grid, above the grid so it is always visible.
+                    let multi_count = app.shop_all_selected_multi.len();
+                    if multi_count > 1 {
+                        ui.horizontal(|ui| {
+                            if ui
+                                .button(format!("Remove selected ({})", multi_count))
+                                .on_hover_text("Stop selling the right-click selected items in all shops")
+                                .clicked()
+                            {
+                                for name in app.shop_all_selected_multi.iter() {
+                                    app.shop_additions.remove(name);
+                                }
+                                app.shop_all_selected_multi.clear();
+                                app.shop_all_selected = None;
+                            }
+                        });
+                    }
                     let mut search = app.shop_all_search.clone();
                     let selected = app.shop_all_selected.clone();
                     let show_only = app.shop_show_only_modified;
@@ -577,9 +726,6 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
                         &selected,
                         show_only,
                         |app, name| app.shop_additions.contains_key(name),
-                        |app, name| {
-                            app.shop_all_selected = Some(name.to_string());
-                        },
                     );
                     app.shop_all_search = search;
                 });
@@ -627,6 +773,107 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
             .max_size(ui.available_width() * 0.5)
             .show_inside(ui, |ui| {
                 ui.set_min_width(ui.available_width());
+
+                // Multi-selection: remove every selected entry from this merchant.
+                let multi_entries: Vec<(usize, usize)> = app
+                    .shop_selected_entries_multi
+                    .get(&npc_idx)
+                    .map(|s| s.iter().copied().collect())
+                    .unwrap_or_default();
+                if multi_entries.len() > 1 {
+                    ui.heading("Edit Selected Entries");
+                    ui.label(format!("{} entries selected", multi_entries.len()));
+                    ui.add_space(4.0);
+
+                    // Cost / Token cost apply to every selected entry's item.
+                    // Seed the fields from the first selected entry.
+                    let first_item = multi_entries
+                        .first()
+                        .and_then(|(n, e)| {
+                            npc_owned
+                                .nodes
+                                .get(*n)
+                                .and_then(|nd| {
+                                    split_script(&nd.store_script)
+                                        .get(*e)
+                                        .map(|l| parse_entry(l).1)
+                                })
+                        })
+                        .unwrap_or_default();
+                    let first_cost = item_info
+                        .get(&first_item)
+                        .map(|(_, c, _, _, _)| *c)
+                        .unwrap_or(0.0);
+                    let first_token = item_info
+                        .get(&first_item)
+                        .map(|(_, _, tc, _, _)| *tc)
+                        .unwrap_or(0);
+
+                    let mut cost = first_cost;
+                    let mut token_cost = first_token;
+                    let cost_changed = ui
+                        .horizontal(|ui| {
+                            ui.label("Cost (silver):");
+                            ui.add(egui::DragValue::new(&mut cost).speed(1.0)).changed()
+                        })
+                        .inner;
+                    let token_changed = ui
+                        .horizontal(|ui| {
+                            ui.label("Token cost:");
+                            ui.add(egui::DragValue::new(&mut token_cost)).changed()
+                        })
+                        .inner;
+                    if cost_changed || token_changed {
+                        // Collect the unique item names among the selected entries.
+                        let mut items: Vec<String> = Vec::new();
+                        for (n, e) in &multi_entries {
+                            if let Some(nd) = npc_owned.nodes.get(*n) {
+                                if let Some(l) = split_script(&nd.store_script).get(*e) {
+                                    let item = parse_entry(l).1;
+                                    if !items.contains(&item) {
+                                        items.push(item);
+                                    }
+                                }
+                            }
+                        }
+                        for item in items {
+                            if cost_changed {
+                                actions.push(ShopAction::SetCost {
+                                    item: item.clone(),
+                                    cost,
+                                });
+                            }
+                            if token_changed {
+                                actions.push(ShopAction::SetTokenCost {
+                                    item,
+                                    token_cost,
+                                });
+                            }
+                        }
+                    }
+                    ui.add_space(4.0);
+                    if ui
+                        .button("Remove all selected")
+                        .on_hover_text("Remove the selected entries from this merchant")
+                        .clicked()
+                    {
+                        for (n, e) in &multi_entries {
+                            actions.push(ShopAction::RemoveEntry {
+                                npc: npc_idx,
+                                node: *n,
+                                entry: *e,
+                            });
+                        }
+                        if let Some(sel) = app.shop_selected_entries_multi.get_mut(&npc_idx) {
+                            sel.clear();
+                        }
+                        app.shop_selected_entry = None;
+                    }
+                    ui.separator();
+                    // Hide the single-entry editor while a multi-selection is active.
+                    return;
+                }
+
                 ui.heading("Selected Item");
                 let Some((sel_node, sel_entry)) = app.shop_selected_entry else {
                     ui.label("Click an item on the shelf to edit it.");
@@ -840,7 +1087,30 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
                 {
                     node_reset = true;
                 }
+                let multi_count = app
+                    .shop_selected_entries_multi
+                    .get(&npc_idx)
+                    .map_or(0, |s| s.len());
+                if multi_count > 1
+                    && ui
+                        .button(format!("Remove selected ({})", multi_count))
+                        .on_hover_text("Remove the selected entries from this merchant")
+                        .clicked()
+                {
+                    if let Some(sel) = app.shop_selected_entries_multi.get_mut(&npc_idx) {
+                        for (n, e) in sel.iter() {
+                            actions.push(ShopAction::RemoveEntry {
+                                npc: npc_idx,
+                                node: *n,
+                                entry: *e,
+                            });
+                        }
+                        sel.clear();
+                    }
+                    app.shop_selected_entry = None;
+                }
                 ui.checkbox(&mut app.shop_show_only_modified, "Show only modified");
+                crate::tabs::multisel::mouse_help_button(ui, &[]);
             });
 
             // "Modified" = the entry differs from the vanilla store script for that node, the item is in the sell-in-all-shops list, or the item's cost differs from vanilla.
@@ -868,76 +1138,150 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
             // Shelf: grid of item cells, like the in-game shop window.
             // Columns are pinned to the image button's real width (icon + button padding), so the wrap count matches the grid's per-cell advance and a column can never spill under the edit sidebar, even while dragging it.
             ui.style_mut().interaction.selectable_labels = false;
+            // Selection gesture state (click / ctrl+click / shift+click / shift+drag box).
+            let mut gsel = std::mem::take(&mut app.shop_shelf_grid_sel);
+            gsel.begin(ui);
+            // Full display order (respecting the show-only filter) so shift+click ranges work across scrolled-out entries.
+            let show_only = app.shop_show_only_modified;
+            gsel.display_order.clear();
+            for (node_idx, e_idx, flag, item) in &flat {
+                if show_only && !is_modified(app, *node_idx, *e_idx, flag, item) {
+                    continue;
+                }
+                gsel.display_order.push((*node_idx, *e_idx));
+            }
             egui::ScrollArea::vertical()
+                .scroll_source(crate::tabs::multisel::grid_scroll_source(ui))
                 .auto_shrink([false; 2])
-                .show(ui, |ui| {
+                .show_viewport(ui, |ui, viewport| {
                     let icon = app.config.item_icon_size;
                     let btn_w = icon + 2.0 * ui.spacing().button_padding.x;
                     let cell_w = btn_w + 8.0;
                     let cols = ((ui.available_width() / cell_w).floor() as usize).max(1);
                     let show_only = app.shop_show_only_modified;
+                    // Only rows whose y-range intersects the visible viewport are laid out each frame.
+                    // Culled cells still advance the grid cursor via allocate_space with the exact cell size, so positions, row heights and the scrollbar stay exact while the widget count stays proportional to the viewport.
+                    let label_h = ui.fonts_mut(|f| f.row_height(&egui::FontId::proportional(app.config.grid_font_size)));
+                    let spacing_y = ui.spacing().item_spacing.y;
+                    let pad_y = 2.0 * ui.spacing().button_padding.y;
+                    let overscan = 3.0 * (icon + 2.0 * ui.spacing().button_padding.x);
+                    let vp_min = viewport.min.y - overscan;
+                    let vp_max = viewport.max.y + overscan;
                     egui::Grid::new(("shop_shelf", npc_idx))
                         .spacing([8.0, 8.0])
                         .min_col_width(btn_w)
                         .max_col_width(btn_w)
                         .show(ui, |ui| {
                             let mut vis = 0usize;
+                            let mut row_y = 0.0f32;
+                            let mut row_h = 0.0f32;
                             for (node_idx, e_idx, flag, item) in &flat {
                                 if show_only && !is_modified(app, *node_idx, *e_idx, flag, item) {
                                     continue;
                                 }
-                                ui.vertical(|ui| {
-                                    let selected =
-                                        app.shop_selected_entry == Some((*node_idx, *e_idx));
-                                    let def = app
-                                        .working_catalog
-                                        .as_ref()
-                                        .and_then(|c| c.by_name.get(item).map(|&i| &c.loot_defs[i]));
-                                    let response = crate::tabs::items::draw_image_button(
-                                        ui,
-                                        app.item_atlas.as_ref(),
-                                        def,
-                                        app.config.item_icon_size,
-                                        &app.image_editor,
-                                    );
-                                    if response.clicked() {
-                                        app.shop_selected_entry = Some((*node_idx, *e_idx));
-                                    }
-                                    // Clamp the labels to the button width so long
-                                    // names never widen the cell.
-                                    ui.set_max_width(response.rect.width());
-                                    match item_info.get(item) {
-                                        Some((display, cost, token_cost, _, _)) => {
-                                            crate::tabs::items::add_item_label(
-                                                ui,
-                                                display,
-                                                app.config.grid_font_size,
-                                                selected,
-                                            );
-                                            let cost_str = if *token_cost > 0 {
-                                                format!("{} tokens", token_cost)
-                                            } else {
-                                                format!("{} silver", cost)
-                                            };
-                                            ui.label(
-                                                egui::RichText::new(cost_str)
-                                                    ,
-                                            );
+                                let def = app
+                                    .working_catalog
+                                    .as_ref()
+                                    .and_then(|c| c.by_name.get(item).map(|&i| &c.loot_defs[i]));
+                                let has_icon = def
+                                    .and_then(|d| {
+                                        app.item_atlas.as_ref().and_then(|a| a.icon_uv(d))
+                                    })
+                                    .is_some()
+                                    || def.is_some_and(|d| {
+                                        let cap = app.image_editor.capacity as i32;
+                                        cap > 0
+                                            && d.img >= cap
+                                            && app
+                                                .image_editor
+                                                .icons
+                                                .iter()
+                                                .any(|(local, _)| *local == d.img - cap)
+                                    });
+                                let display = item_info
+                                    .get(item)
+                                    .map(|(d, _, _, _, _)| d.as_str())
+                                    .unwrap_or("?");
+                                let word_count = display.split_whitespace().count();
+                                // Image buttons are icon_size + button frame margins tall; placeholders are icon_size.
+                                let cell_h = (if has_icon { icon + pad_y } else { icon })
+                                    + word_count as f32 * (label_h + spacing_y)
+                                    + label_h;
+                                row_h = row_h.max(cell_h);
+                                let row_visible = row_y + row_h >= vp_min && row_y <= vp_max;
+                                if !row_visible {
+                                    ui.allocate_space(egui::vec2(btn_w, cell_h));
+                                } else {
+                                    ui.vertical(|ui| {
+                                        let selected =
+                                            app.shop_selected_entry == Some((*node_idx, *e_idx))
+                                            || app
+                                                .shop_selected_entries_multi
+                                                .get(&npc_idx)
+                                                .is_some_and(|s| {
+                                                    s.contains(&(*node_idx, *e_idx))
+                                                })
+                                            || gsel.is_box_hit(&(*node_idx, *e_idx));
+                                        let response = crate::tabs::items::draw_image_button(
+                                            ui,
+                                            app.item_atlas.as_ref(),
+                                            def,
+                                            icon,
+                                            &app.image_editor,
+                                        );
+                                        gsel.cell(response.rect, (*node_idx, *e_idx));
+                                        crate::tabs::multisel::paint_sel_outline(
+                                            ui,
+                                            response.rect,
+                                            selected,
+                                        );
+                                        // Clamp the labels to the button width so long
+                                        // names never widen the cell.
+                                        ui.set_max_width(response.rect.width());
+                                        match item_info.get(item) {
+                                            Some((display, cost, token_cost, _, _)) => {
+                                                crate::tabs::items::add_item_label(
+                                                    ui,
+                                                    display,
+                                                    app.config.grid_font_size,
+                                                    selected,
+                                                );
+                                                let cost_str = if *token_cost > 0 {
+                                                    format!("{} tokens", token_cost)
+                                                } else {
+                                                    format!("{} silver", cost)
+                                                };
+                                                ui.label(
+                                                    egui::RichText::new(cost_str)
+                                                        ,
+                                                );
+                                            }
+                                            None => {
+                                                ui.label(
+                                                    egui::RichText::new("?")
+                                                        ,
+                                                );
+                                            }
                                         }
-                                        None => {
-                                            ui.label(
-                                                egui::RichText::new("?")
-                                                    ,
-                                            );
-                                        }
-                                    }
-                                });
+                                    });
+                                }
                                 vis += 1;
                                 if vis % cols == 0 {
                                     ui.end_row();
+                                    row_y += row_h + spacing_y;
+                                    row_h = 0.0;
                                 }
                             }
                         });
+
+                    gsel.update_target();
+                    gsel.paint(ui);
+                    // The shelf keeps one multi-set per merchant, so apply the gesture into the per-npc set.
+                    let mut single = app.shop_selected_entry;
+                    let multi = app.shop_selected_entries_multi.entry(npc_idx).or_default();
+                    gsel.end(ui, multi, &mut single);
+                    app.shop_selected_entry = single;
+                    app.shop_shelf_grid_sel = gsel;
                 });
             let _ = flat;
             ui.add_space(8.0);
@@ -1031,34 +1375,91 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
 
                 egui::ScrollArea::both()
                     .auto_shrink([false; 2])
-                    .show(ui, |ui| {
+                    .show_viewport(ui, |ui, viewport| {
+                        // Only items whose x-range intersects the visible viewport are laid out each frame.
+                        // Culled items still advance the grid cursor via allocate_space with the exact cell size, so positions, row heights and the scrollbar stay exact while the widget count stays proportional to the viewport.
+                        let icon_size = app.config.item_icon_size;
+                        let label_h = ui.fonts_mut(|f| {
+                            f.row_height(&egui::FontId::proportional(app.config.grid_font_size))
+                        });
+                        let spacing_y = ui.spacing().item_spacing.y;
+                        let pad_x = 2.0 * ui.spacing().button_padding.x;
+                        let pad_y = 2.0 * ui.spacing().button_padding.y;
+                        let overscan = 3.0 * (icon_size + pad_x);
+                        let vp_min = viewport.min.x - overscan;
+                        let vp_max = viewport.max.x + overscan;
+
                         for (cat, entries) in grouped {
                             ui.style_mut().interaction.selectable_labels = false;
-                            ui.label(egui::RichText::new(&cat).strong().size(app.config.category_font_size));
+                            ui.label(
+                                egui::RichText::new(&cat)
+                                    .strong()
+                                    .size(app.config.category_font_size),
+                            );
                             egui::Grid::new(("shop_pick_grid", cat))
                                 .spacing([8.0, 8.0])
                                 .show(ui, |ui| {
+                                    let mut x = 0.0f32;
                                     for (name, display, cost, token_cost, _, _) in entries {
+                                        let def = app.working_catalog.as_ref().and_then(|cat| {
+                                            cat.by_name
+                                                .get(name)
+                                                .and_then(|&i| cat.loot_defs.get(i))
+                                        });
+                                        let has_icon = def
+                                            .and_then(|d| {
+                                                app.item_atlas.as_ref().and_then(|a| a.icon_uv(d))
+                                            })
+                                            .is_some()
+                                            || def.is_some_and(|d| {
+                                                let cap = app.image_editor.capacity as i32;
+                                                cap > 0
+                                                    && d.img >= cap
+                                                    && app
+                                                        .image_editor
+                                                        .icons
+                                                        .iter()
+                                                        .any(|(local, _)| *local == d.img - cap)
+                                            });
+                                        let word_count = display.split_whitespace().count();
+                                        // Image buttons are icon_size + button frame margins wide; placeholders are icon_size.
+                                        let item_w = if has_icon {
+                                            icon_size + pad_x
+                                        } else {
+                                            icon_size
+                                        };
+                                        let item_h = if has_icon {
+                                            icon_size + pad_y
+                                        } else {
+                                            icon_size
+                                        } + word_count as f32 * (label_h + spacing_y);
+                                        let start = x;
+                                        let end = x + item_w;
+                                        x = end + 8.0;
+                                        if end < vp_min || start > vp_max {
+                                            ui.allocate_space(egui::vec2(item_w, item_h));
+                                            continue;
+                                        }
+
                                         ui.vertical(|ui| {
                                             let already = existing.contains(name);
-                                            let clicked = draw_item_cell(
+                                            let response = draw_item_cell(
                                                 ui,
                                                 app,
                                                 name,
                                                 display,
                                                 *cost,
                                                 *token_cost,
-                                                app.config.item_icon_size,
+                                                icon_size,
                                                 false,
                                             );
                                             if already {
                                                 ui.label(
                                                     egui::RichText::new("in shop")
-                                                        
                                                         .color(egui::Color32::LIGHT_GREEN),
                                                 );
                                             }
-                                            if clicked {
+                                            if response.clicked() {
                                                 chosen = Some(name.clone());
                                             }
                                         });

@@ -1,4 +1,4 @@
-use crate::atlas::{assemble_frame_with_parts, PartRenderInfo};
+use crate::atlas::{PartRenderInfo, assemble_frame_with_parts};
 use egui::TextureHandle;
 use image::RgbaImage;
 use sas2_parser::char_def::{Animation, CharDef, KeyFrame};
@@ -10,10 +10,7 @@ use std::path::{Path, PathBuf};
 
 /// Editor state for the animation timeline tab (Phase 4).
 ///
-/// Loads a character definition (`.zsx`), lets the user edit its animations (keyframe timing,
-/// frame references, scripts) and the per-part transforms of each frame, previews any frame by
-/// reusing the bestiary sprite assembly, and saves the result into the loader's config mirror at
-/// `BepInEx/config/amione.SaS2Resalter/Character/data/<name>.zsx`.
+/// Loads a character definition (`.zsx`), lets the user edit its animations (keyframe timing, frame references, scripts) and the per-part transforms of each frame, previews any frame by reusing the bestiary sprite assembly, and saves the result into the loader's config mirror at `BepInEx/config/amione.SaS2Resalter/Character/data/<name>.zsx`.
 #[derive(Default)]
 pub struct AnimEditor {
     pub files: Vec<String>,
@@ -84,7 +81,10 @@ impl AnimEditor {
             }
         };
         push_dir(game_path.join("Character/data"), &mut stems);
-        push_dir(Self::config_root(game_path).join("Character/data"), &mut stems);
+        push_dir(
+            Self::config_root(game_path).join("Character/data"),
+            &mut stems,
+        );
         stems.sort();
         stems.dedup();
         self.files = stems;
@@ -191,15 +191,13 @@ impl AnimEditor {
         let Some(frame) = cd.frames.get(frame_idx) else {
             return;
         };
-        if let Some((img, _, parts)) = assemble_frame_with_parts(frame, sheet, self.tex_meta.as_ref())
+        if let Some((img, _, parts)) =
+            assemble_frame_with_parts(frame, sheet, self.tex_meta.as_ref())
         {
             let (w, h) = (img.width(), img.height());
-            let ci = egui::ColorImage::from_rgba_unmultiplied(
-                [w as usize, h as usize],
-                img.as_raw(),
-            );
-            self.preview_handle =
-                Some(ctx.load_texture("anim_preview", ci, Default::default()));
+            let ci =
+                egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], img.as_raw());
+            self.preview_handle = Some(ctx.load_texture("anim_preview", ci, Default::default()));
             self.preview_size = (w, h);
             self.part_render = parts;
         }
@@ -234,7 +232,11 @@ impl AnimEditor {
         let Some(anim) = self.selected_anim.and_then(|i| cd.animations.get(i)) else {
             return;
         };
-        let total: i64 = anim.key_frames.iter().map(|k| k.duration.max(1) as i64).sum();
+        let total: i64 = anim
+            .key_frames
+            .iter()
+            .map(|k| k.duration.max(1) as i64)
+            .sum();
         if total <= 0 || anim.key_frames.is_empty() {
             return;
         }

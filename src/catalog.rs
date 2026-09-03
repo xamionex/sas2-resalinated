@@ -50,9 +50,16 @@ pub fn load_map_entities(
     master: &MasterTextures,
     flag_defs: &SubFlagDefCatalog,
 ) -> Result<MapData, String> {
-    let map_path = game_path.join("Map").join("data").join(format!("{}.zax", map_name));
+    let map_path = game_path
+        .join("Map")
+        .join("data")
+        .join(format!("{}.zax", map_name));
     if !map_path.exists() {
-        return Err(format!("{}.zax not found in: {}", map_name, map_path.display()));
+        return Err(format!(
+            "{}.zax not found in: {}",
+            map_name,
+            map_path.display()
+        ));
     }
     let data = fs::read(&map_path).map_err(|e| e.to_string())?;
     MapData::load_from_bytes(&data, master, flag_defs).map_err(|e| e.to_string())

@@ -8,10 +8,8 @@ use std::time::SystemTime;
 
 /// Editor state for the texture / cell metadata tab (Phase 3).
 ///
-/// This owns its own lossless copy of `master.zcm` (cell rectangles + origins) and renders the
-/// matching sprite sheet so cells can be inspected and adjusted numerically. Texture pixels are
-/// edited externally (import a PNG or open in the user's image editor); this tool does not paint
-/// pixels in-app, by design.
+/// This owns its own lossless copy of `master.zcm` (cell rectangles + origins) and renders the matching sprite sheet so cells can be inspected and adjusted numerically.
+/// Texture pixels are edited externally (import a PNG or open in the user's image editor), this tool does not paint pixels in-app, by design.
 ///
 /// All edits land in the config mirror that the loader reads:
 ///   - cell metadata -> `BepInEx/config/amione.SaS2Resalter/Content/gfx/master.zcm`
@@ -53,9 +51,8 @@ pub struct TextureEditor {
 }
 
 impl TextureEditor {
-    // Overrides live in the shared working-assets folder (snapshotted into presets on Save,
-    // merged into the live config only on Apply). The `game_path` argument is kept for signature
-    // stability and vanilla-source reads.
+    // Overrides live in the shared working-assets folder (snapshotted into presets on Save, merged into the live config only on Apply).
+    // The `game_path` argument is kept for signature stability and vanilla-source reads.
     fn textures_dir(_game_path: &Path) -> PathBuf {
         crate::assets::working_root().join(crate::assets::TEXTURES_DIR)
     }
@@ -68,8 +65,8 @@ impl TextureEditor {
         Self::textures_dir(game_path).join(format!("{}.png", name))
     }
 
-    /// Load flag defs and cell metadata once. Prefers the config-mirror master.zcm (so prior
-    /// edits persist), falling back to the game's own bundle.
+    /// Load flag defs and cell metadata once.
+    /// Prefers the config-mirror master.zcm (so prior edits persist), falling back to the game's own bundle.
     pub fn ensure_loaded(&mut self, game_path: &Path) {
         if self.load_attempted {
             return;
@@ -117,8 +114,9 @@ impl TextureEditor {
             .map_or(false, |v| v.get(&name).is_some())
     }
 
-    /// Append a blank texture entry (no cells) and select it. The user imports a PNG and adds
-    /// cells afterwards. Returns the new index.
+    /// Append a blank texture entry (no cells) and select it.
+    /// The user imports a PNG and adds cells afterwards.
+    /// Returns the new index.
     pub fn create_blank_texture(&mut self) -> Option<usize> {
         let master = self.master.as_mut()?;
         let name = unique_texture_name(master, "new_texture");
@@ -149,8 +147,7 @@ impl TextureEditor {
             (master.entries.len() - 1, src_name, new_name)
         };
 
-        // Give the clone its own sheet: copy the source override PNG if present, else decode the
-        // vanilla xnb into a fresh override PNG so the new texture renders standalone.
+        // Give the clone its own sheet: copy the source override PNG if present, else decode the vanilla xnb into a fresh override PNG so the new texture renders standalone.
         let dst_png = Self::png_override_path(game_path, &new_name);
         if let Some(parent) = dst_png.parent() {
             let _ = std::fs::create_dir_all(parent);
@@ -195,8 +192,8 @@ impl TextureEditor {
         self.sheet_for = None;
     }
 
-    /// Rename the texture at `idx` (master entry name + its PNG override file). Tracks the
-    /// original vanilla name so the rename can be reverted.
+    /// Rename the texture at `idx` (master entry name + its PNG override file).
+    /// Tracks the original vanilla name so the rename can be reverted.
     pub fn rename_texture(
         &mut self,
         game_path: &Path,
@@ -228,14 +225,11 @@ impl TextureEditor {
         entry.0 = new_name.as_bytes().to_vec();
 
         // Track the original vanilla name for revert.
-        let original = self
-            .renamed_from
-            .remove(&old_name)
-            .or_else(|| {
-                self.vanilla_master
-                    .as_ref()
-                    .and_then(|v| v.get(&old_name).map(|_| old_name.clone()))
-            });
+        let original = self.renamed_from.remove(&old_name).or_else(|| {
+            self.vanilla_master
+                .as_ref()
+                .and_then(|v| v.get(&old_name).map(|_| old_name.clone()))
+        });
         if let Some(orig) = original {
             if orig != new_name {
                 self.renamed_from.insert(new_name.to_string(), orig);
@@ -273,11 +267,7 @@ impl TextureEditor {
     }
 
     /// Restore the texture at `idx` to its vanilla cell metadata and remove its PNG override.
-    pub fn reset_texture_to_vanilla(
-        &mut self,
-        game_path: &Path,
-        idx: usize,
-    ) -> Result<(), String> {
+    pub fn reset_texture_to_vanilla(&mut self, game_path: &Path, idx: usize) -> Result<(), String> {
         let name = self.texture_name(idx);
         let van_tex = self
             .vanilla_master
@@ -332,14 +322,13 @@ impl TextureEditor {
             .unwrap_or_default()
     }
 
-    /// Ensure the sheet handle matches the selected texture, loading it if needed. The override
-    /// PNG takes priority over the vanilla xnb so the preview reflects pending pixel edits.
+    /// Ensure the sheet handle matches the selected texture, loading it if needed.
+    /// The override PNG takes priority over the vanilla xnb so the preview reflects pending pixel edits.
     pub fn ensure_sheet(&mut self, ctx: &egui::Context, game_path: &Path) {
         let Some(idx) = self.selected_texture else {
             return;
         };
-        // `reload_sheet` always sets `sheet_for = Some(idx)`, so guarding on it alone also caches
-        // the failure case (no sheet found) and avoids re-decoding from disk every frame.
+        // `reload_sheet` always sets `sheet_for = Some(idx)`, so guarding on it alone also caches the failure case (no sheet found) and avoids re-decoding from disk every frame.
         if self.sheet_for == Some(idx) {
             return;
         }
@@ -354,7 +343,9 @@ impl TextureEditor {
         let img = if png.exists() {
             self.watch_path = Some(png.clone());
             self.watch_mtime = std::fs::metadata(&png).and_then(|m| m.modified()).ok();
-            image::open(&png).map(|i| i.to_rgba8()).map_err(|e| e.to_string())
+            image::open(&png)
+                .map(|i| i.to_rgba8())
+                .map_err(|e| e.to_string())
         } else {
             self.watch_path = None;
             self.watch_mtime = None;
@@ -372,8 +363,7 @@ impl TextureEditor {
                     [w as usize, h as usize],
                     img.as_raw(),
                 );
-                let handle =
-                    ctx.load_texture(format!("tex_edit_{}", name), ci, Default::default());
+                let handle = ctx.load_texture(format!("tex_edit_{}", name), ci, Default::default());
                 self.sheet_handle = Some(handle);
                 self.sheet_size = (w, h);
                 self.sheet_for = Some(idx);
@@ -398,12 +388,15 @@ impl TextureEditor {
         if self.watch_mtime != Some(modified) {
             self.watch_mtime = Some(modified);
             self.reload_sheet(ctx, game_path, idx);
-            self.status = Some(format!("Reloaded '{}' after external edit", self.texture_name(idx)));
+            self.status = Some(format!(
+                "Reloaded '{}' after external edit",
+                self.texture_name(idx)
+            ));
         }
     }
 
-    /// Copy an imported image into the config mirror as `textures/<name>.png`, re-encoding to PNG
-    /// so any supported input format works. This is the loader-visible pixel override.
+    /// Copy an imported image into the config mirror as `textures/<name>.png`, re-encoding to PNG so any supported input format works.
+    /// This is the loader-visible pixel override.
     pub fn import_png(&mut self, game_path: &Path, idx: usize, src: &Path) -> Result<(), String> {
         let name = self.texture_name(idx);
         let dest = Self::png_override_path(game_path, &name);
@@ -416,9 +409,8 @@ impl TextureEditor {
         Ok(())
     }
 
-    /// Seed the override PNG from the vanilla sheet (if not present) and open it for external
-    /// editing. When `editor` is non-empty it is launched with the PNG as its final argument,
-    /// otherwise the OS default handler is used.
+    /// Seed the override PNG from the vanilla sheet (if not present) and open it for external editing.
+    /// When `editor` is non-empty it is launched with the PNG as its final argument, otherwise the OS default handler is used.
     pub fn open_external(
         &mut self,
         game_path: &Path,

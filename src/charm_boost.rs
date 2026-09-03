@@ -71,54 +71,54 @@ impl CharmBoostRange {
 /// Flags without a known formula (multiplayer, runes, etc.) default to 1.0 flat.
 pub fn charm_boost_vanilla(flag: i32) -> f32 {
     match flag {
-        0 => 10.0,   // Phys Def: 20 * v * 0.5
-        1 => 20.0,   // Fire Def: 20 * v
-        2 => 20.0,   // Cold Def
-        3 => 20.0,   // Poison Def
-        4 => 20.0,   // Light Def
-        5 => 20.0,   // Dark Def
-        6 => 10.0,   // Item Find: v * 10 (+ v * 0.2 drop rate)
-        7 => 0.15,   // Rage Gain: v * 0.15 per sec
-        8 => 1.0,    // Rage Window: +v seconds
-        9 => 1.0,    // Wood Runes (no magnitude formula)
-        10 => 1.0,   // Poise (no magnitude formula)
-        11 => 2.0,   // Fast grapple/climb: 15 - v * 2 stamina
-        12 => 10.0,  // Stamina Regen: v * 10
-        13 => 50.0,  // Silver Find: v * 0.5 = 50%
-        14 => 10.0,  // Damage: v * 0.1 = 10%
-        15 => 5.0,   // Gold: v * 0.05 dmg = 5% (also v*2.5 def, v*2 stamina)
-        16 => 20.0,  // Fire Atk: v * 0.2 = 20%
-        17 => 20.0,  // Cold Atk
-        18 => 20.0,  // Poison Atk
-        19 => 20.0,  // Light Atk
-        20 => 20.0,  // Dark Atk
+        0 => 10.0,      // Phys Def: 20 * v * 0.5
+        1 => 20.0,      // Fire Def: 20 * v
+        2 => 20.0,      // Cold Def
+        3 => 20.0,      // Poison Def
+        4 => 20.0,      // Light Def
+        5 => 20.0,      // Dark Def
+        6 => 10.0,      // Item Find: v * 10 (+ v * 0.2 drop rate)
+        7 => 0.15,      // Rage Gain: v * 0.15 per sec
+        8 => 1.0,       // Rage Window: +v seconds
+        9 => 1.0,       // Wood Runes (no magnitude formula)
+        10 => 1.0,      // Poise (no magnitude formula)
+        11 => 2.0,      // Fast grapple/climb: 15 - v * 2 stamina
+        12 => 10.0,     // Stamina Regen: v * 10
+        13 => 50.0,     // Silver Find: v * 0.5 = 50%
+        14 => 10.0,     // Damage: v * 0.1 = 10%
+        15 => 5.0,      // Gold: v * 0.05 dmg = 5% (also v*2.5 def, v*2 stamina)
+        16 => 20.0,     // Fire Atk: v * 0.2 = 20%
+        17 => 20.0,     // Cold Atk
+        18 => 20.0,     // Poison Atk
+        19 => 20.0,     // Light Atk
+        20 => 20.0,     // Dark Atk
         21..=28 => 1.0, // Multiplayer flags (boolean)
-        29 => 5.0,   // Carry Weight: v * 5
-        30 => 5.0,   // HP Kill Gain: maxHP * 0.05 * v = 5%
-        31 => 5.0,   // MP Kill Gain: 5%
-        32 => 50.0,  // Parry Stagger Damage: poiseAtk * v * 0.5 = 50%
-        33 => 25.0,  // MP Regain: 1 + v * 0.25 = 25%
-        34 => 50.0,  // Riposte Dmg: 1 + v * 0.5 = 50%
-        35 => 50.0,  // Dying Boost: v * 0.5 = 50%
-        36 => 5.0,   // Max HP Boost: 1 + 0.05 * v = 5%
-        37 => 5.0,   // Max Rage Boost: 5%
-        38 => 10.0,  // Max MP Boost: v * 10
-        39 => 5.0,   // Max Stamina Boost: 5%
-        40 => 2.5,   // MP Parry regain: maxMP * 0.025 * v = 2.5%
-        41 => 2.5,   // HP Parry regain: 2.5%
-        42 => 50.0,  // MP Riposte regain: maxMP * 0.5 * v = 50%
-        43 => 50.0,  // HP Riposte regain: 50%
-        44 => 50.0,  // Restock speed: 1 + v * 0.5 = 50%
-        45 => 12.5,  // Rage Parry regain: maxRage * 0.125 * v = 12.5%
-        46 => 12.5,  // Rage Riposte regain: 12.5%
-        47 => 1.0,   // Stamina coverage (complex formula)
-        48 => 10.0,  // Blocking stamina cheap: v * 0.1 = 10%
-        49 => 15.0,  // Runic art boost: 1 + v * 0.15 = 15%
-        50 => 50.0,  // Faster Drinking: 1 + v * 0.5 = 50%
-        51 => 3.1,   // Overall defense: v * 3.1
-        52 => 10.0,  // Haze HP: maxHP * 0.1 * v = 10%
-        53 => 10.0,  // Haze MP: 10%
-        54 => 3.0,   // Haze Rage: v * 3
+        29 => 5.0,      // Carry Weight: v * 5
+        30 => 5.0,      // HP Kill Gain: maxHP * 0.05 * v = 5%
+        31 => 5.0,      // MP Kill Gain: 5%
+        32 => 50.0,     // Parry Stagger Damage: poiseAtk * v * 0.5 = 50%
+        33 => 25.0,     // MP Regain: 1 + v * 0.25 = 25%
+        34 => 50.0,     // Riposte Dmg: 1 + v * 0.5 = 50%
+        35 => 50.0,     // Dying Boost: v * 0.5 = 50%
+        36 => 5.0,      // Max HP Boost: 1 + 0.05 * v = 5%
+        37 => 5.0,      // Max Rage Boost: 5%
+        38 => 10.0,     // Max MP Boost: v * 10
+        39 => 5.0,      // Max Stamina Boost: 5%
+        40 => 2.5,      // MP Parry regain: maxMP * 0.025 * v = 2.5%
+        41 => 2.5,      // HP Parry regain: 2.5%
+        42 => 50.0,     // MP Riposte regain: maxMP * 0.5 * v = 50%
+        43 => 50.0,     // HP Riposte regain: 50%
+        44 => 50.0,     // Restock speed: 1 + v * 0.5 = 50%
+        45 => 12.5,     // Rage Parry regain: maxRage * 0.125 * v = 12.5%
+        46 => 12.5,     // Rage Riposte regain: 12.5%
+        47 => 1.0,      // Stamina coverage (complex formula)
+        48 => 10.0,     // Blocking stamina cheap: v * 0.1 = 10%
+        49 => 15.0,     // Runic art boost: 1 + v * 0.15 = 15%
+        50 => 50.0,     // Faster Drinking: 1 + v * 0.5 = 50%
+        51 => 3.1,      // Overall defense: v * 3.1
+        52 => 10.0,     // Haze HP: maxHP * 0.1 * v = 10%
+        53 => 10.0,     // Haze MP: 10%
+        54 => 3.0,      // Haze Rage: v * 3
         _ => 1.0,
     }
 }

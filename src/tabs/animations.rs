@@ -60,15 +60,24 @@ fn show_left(app: &mut ResalinatedApp, ui: &mut Ui, game_path: &Path) {
 
     let files = app.anim_editor.filtered_files();
     let loaded = app.anim_editor.loaded_stem.clone();
+    // Virtualized rows: only the rows visible in the scroll viewport are laid out each frame.
+    let row_height = ui
+        .text_style_height(&egui::TextStyle::Body)
+        .max(ui.spacing().interact_size.y);
     egui::ScrollArea::vertical()
         .id_salt("anim_files")
         .max_height(220.0)
         .auto_shrink([false, false])
-        .show(ui, |ui| {
-            for stem in files {
+        .show_rows(ui, row_height, files.len(), |ui, row_range| {
+            for i in row_range {
+                let stem = &files[i];
                 let sel = loaded.as_deref() == Some(stem.as_str());
-                if ui.selectable_label(sel, &stem).clicked() && !sel {
-                    app.anim_editor.load_char(game_path, &stem);
+                if ui
+                    .add(egui::Button::selectable(sel, stem).truncate())
+                    .clicked()
+                    && !sel
+                {
+                    app.anim_editor.load_char(game_path, stem);
                 }
             }
         });
@@ -85,17 +94,25 @@ fn show_left(app: &mut ResalinatedApp, ui: &mut Ui, game_path: &Path) {
         .map(|cd| cd.animations.iter().map(|a| a.name.clone()).collect())
         .unwrap_or_default();
 
+    // Virtualized rows: only the rows visible in the scroll viewport are laid out each frame.
+    let row_height = ui
+        .text_style_height(&egui::TextStyle::Body)
+        .max(ui.spacing().interact_size.y);
     egui::ScrollArea::vertical()
         .id_salt("anim_list")
         .auto_shrink([false, false])
-        .show(ui, |ui| {
-            for (i, name) in anim_names.iter().enumerate() {
+        .show_rows(ui, row_height, anim_names.len(), |ui, row_range| {
+            for i in row_range {
+                let name = &anim_names[i];
                 let label = if name.is_empty() {
                     format!("[{}] (unnamed)", i)
                 } else {
                     format!("[{}] {}", i, name)
                 };
-                if ui.selectable_label(selected_anim == Some(i), label).clicked() {
+                if ui
+                    .add(egui::Button::selectable(selected_anim == Some(i), label).truncate())
+                    .clicked()
+                {
                     app.anim_editor.selected_anim = Some(i);
                     app.anim_editor.selected_kf = None;
                     app.anim_editor.selected_part = None;
@@ -106,7 +123,11 @@ fn show_left(app: &mut ResalinatedApp, ui: &mut Ui, game_path: &Path) {
 
     ui.separator();
     ui.horizontal(|ui| {
-        if ui.button("New").on_hover_text("Add a blank animation").clicked() {
+        if ui
+            .button("New")
+            .on_hover_text("Add a blank animation")
+            .clicked()
+        {
             if let Some(i) = app.anim_editor.add_blank_anim() {
                 app.anim_editor.selected_anim = Some(i);
                 app.anim_editor.selected_kf = None;
@@ -407,61 +428,65 @@ fn show_part_editor(app: &mut ResalinatedApp, ui: &mut Ui) {
 /// Numeric editors for one part. Returns true if any value changed.
 fn part_fields(ui: &mut Ui, part: &mut Part) -> bool {
     let mut changed = false;
-    egui::Grid::new("part_fields").num_columns(2).show(ui, |ui| {
-        ui.label("tile idx");
-        changed |= ui.add(egui::DragValue::new(&mut part.idx)).changed();
-        ui.end_row();
-        ui.label("loc x");
-        changed |= ui
-            .add(egui::DragValue::new(&mut part.location.0).speed(0.5))
-            .changed();
-        ui.end_row();
-        ui.label("loc y");
-        changed |= ui
-            .add(egui::DragValue::new(&mut part.location.1).speed(0.5))
-            .changed();
-        ui.end_row();
-        ui.label("rotation");
-        changed |= ui
-            .add(egui::DragValue::new(&mut part.rotation).speed(0.01))
-            .changed();
-        ui.end_row();
-        ui.label("scale x");
-        changed |= ui
-            .add(egui::DragValue::new(&mut part.scaling.0).speed(0.01))
-            .changed();
-        ui.end_row();
-        ui.label("scale y");
-        changed |= ui
-            .add(egui::DragValue::new(&mut part.scaling.1).speed(0.01))
-            .changed();
-        ui.end_row();
-        ui.label("flip");
-        changed |= ui.add(egui::DragValue::new(&mut part.flip).range(0..=1)).changed();
-        ui.end_row();
-        ui.label("parent");
-        changed |= ui
-            .add(egui::DragValue::new(&mut part.parent).range(-1..=31))
-            .changed();
-        ui.end_row();
-        if part.parent > -1 {
-            ui.label("parent off x");
+    egui::Grid::new("part_fields")
+        .num_columns(2)
+        .show(ui, |ui| {
+            ui.label("tile idx");
+            changed |= ui.add(egui::DragValue::new(&mut part.idx)).changed();
+            ui.end_row();
+            ui.label("loc x");
             changed |= ui
-                .add(egui::DragValue::new(&mut part.parent_loc_offset.0).speed(0.5))
+                .add(egui::DragValue::new(&mut part.location.0).speed(0.5))
                 .changed();
             ui.end_row();
-            ui.label("parent off y");
+            ui.label("loc y");
             changed |= ui
-                .add(egui::DragValue::new(&mut part.parent_loc_offset.1).speed(0.5))
+                .add(egui::DragValue::new(&mut part.location.1).speed(0.5))
                 .changed();
             ui.end_row();
-            ui.label("parent rot off");
+            ui.label("rotation");
             changed |= ui
-                .add(egui::DragValue::new(&mut part.parent_rotation_offset).speed(0.01))
+                .add(egui::DragValue::new(&mut part.rotation).speed(0.01))
                 .changed();
             ui.end_row();
-        }
-    });
+            ui.label("scale x");
+            changed |= ui
+                .add(egui::DragValue::new(&mut part.scaling.0).speed(0.01))
+                .changed();
+            ui.end_row();
+            ui.label("scale y");
+            changed |= ui
+                .add(egui::DragValue::new(&mut part.scaling.1).speed(0.01))
+                .changed();
+            ui.end_row();
+            ui.label("flip");
+            changed |= ui
+                .add(egui::DragValue::new(&mut part.flip).range(0..=1))
+                .changed();
+            ui.end_row();
+            ui.label("parent");
+            changed |= ui
+                .add(egui::DragValue::new(&mut part.parent).range(-1..=31))
+                .changed();
+            ui.end_row();
+            if part.parent > -1 {
+                ui.label("parent off x");
+                changed |= ui
+                    .add(egui::DragValue::new(&mut part.parent_loc_offset.0).speed(0.5))
+                    .changed();
+                ui.end_row();
+                ui.label("parent off y");
+                changed |= ui
+                    .add(egui::DragValue::new(&mut part.parent_loc_offset.1).speed(0.5))
+                    .changed();
+                ui.end_row();
+                ui.label("parent rot off");
+                changed |= ui
+                    .add(egui::DragValue::new(&mut part.parent_rotation_offset).speed(0.01))
+                    .changed();
+                ui.end_row();
+            }
+        });
     changed
 }
 
@@ -486,7 +511,12 @@ fn show_preview_and_timeline(app: &mut ResalinatedApp, ui: &mut Ui) {
             .char_def
             .as_ref()
             .and_then(|cd| cd.animations.get(ai))
-            .map(|a| a.key_frames.iter().map(|k| (k.frame_ref, k.duration)).collect())
+            .map(|a| {
+                a.key_frames
+                    .iter()
+                    .map(|k| (k.frame_ref, k.duration))
+                    .collect()
+            })
             .unwrap_or_default();
 
         ui.horizontal(|ui| {
@@ -506,10 +536,14 @@ fn show_preview_and_timeline(app: &mut ResalinatedApp, ui: &mut Ui) {
                 }
             }
             let can_del = app.anim_editor.selected_kf.is_some();
-            if ui.add_enabled(can_del, egui::Button::new("- keyframe").small()).clicked() {
-                if let (Some(cd), Some(ki)) =
-                    (app.anim_editor.char_def.as_mut(), app.anim_editor.selected_kf)
-                {
+            if ui
+                .add_enabled(can_del, egui::Button::new("- keyframe").small())
+                .clicked()
+            {
+                if let (Some(cd), Some(ki)) = (
+                    app.anim_editor.char_def.as_mut(),
+                    app.anim_editor.selected_kf,
+                ) {
                     if let Some(anim) = cd.animations.get_mut(ai) {
                         if ki < anim.key_frames.len() {
                             anim.key_frames.remove(ki);
@@ -587,11 +621,12 @@ fn draw_part_overlay(app: &ResalinatedApp, ui: &mut Ui, rect: Rect, scale: f32) 
 
     let to_screen = |x: f32, y: f32| Pos2::new(rect.min.x + x * scale, rect.min.y + y * scale);
 
-    let box_rect = Rect::from_min_max(
-        to_screen(r.min_x, r.min_y),
-        to_screen(r.max_x, r.max_y),
+    let box_rect = Rect::from_min_max(to_screen(r.min_x, r.min_y), to_screen(r.max_x, r.max_y));
+    painter.rect_filled(
+        box_rect,
+        0.0,
+        Color32::from_rgba_unmultiplied(60, 200, 255, 30),
     );
-    painter.rect_filled(box_rect, 0.0, Color32::from_rgba_unmultiplied(60, 200, 255, 30));
     painter.rect_stroke(
         box_rect,
         0.0,

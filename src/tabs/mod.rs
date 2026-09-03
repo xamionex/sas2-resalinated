@@ -4,6 +4,7 @@ pub mod images;
 pub mod items;
 pub mod manager;
 pub mod monsters;
+pub mod multisel;
 pub mod preset_info;
 pub mod shop;
 pub mod talismans;

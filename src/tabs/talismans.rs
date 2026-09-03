@@ -1,5 +1,5 @@
 use crate::app::ResalinatedApp;
-use crate::charm_boost::{charm_boost_unit, CharmBoostRange, CharmBoostUnit};
+use crate::charm_boost::{CharmBoostRange, CharmBoostUnit, charm_boost_unit};
 use crate::tabs::utils::CHANGED_COLOR;
 use eframe::egui;
 use egui::Ui;

@@ -1,6 +1,6 @@
 use crate::app::ResalinatedApp;
 use crate::atlas::HitboxPreview;
-use crate::tabs::utils::{field_row, CHANGED_COLOR};
+use crate::tabs::utils::{CHANGED_COLOR, field_row};
 use eframe::egui;
 use egui::Ui;
 use sas2_parser::monster_catalog::{MonsterCatalog, MonsterDef, MonsterFieldValue};
@@ -94,21 +94,34 @@ fn delete_selected_monster(app: &mut ResalinatedApp) {
 
 /// Clone the selected monster under a new unique "<name>_copy" name (full structure preserved).
 fn clone_selected_monster(app: &mut ResalinatedApp) {
-    let Some(idx) = app.selected_monster_idx else {
-        return;
+    // Clone every multi-selected monster (or just the single selection when none).
+    let sources: Vec<usize> = if app.selected_monster_idxs.len() > 1 {
+        let mut v: Vec<usize> = app.selected_monster_idxs.iter().copied().collect();
+        v.sort_unstable();
+        v
+    } else {
+        app.selected_monster_idx.into_iter().collect()
     };
-    let new_def = {
+    if sources.is_empty() {
+        return;
+    }
+    let new_defs = {
         let Some(cat) = app.working_monster_catalog.as_ref() else {
             return;
         };
-        let Some(src) = cat.monsters.get(idx) else {
-            return;
-        };
-        let mut def = src.clone();
-        def.name = next_unique_monster_name(cat, &format!("{}_copy", src.name));
-        def
+        sources
+            .iter()
+            .filter_map(|&idx| {
+                let src = cat.monsters.get(idx)?;
+                let mut def = src.clone();
+                def.name = next_unique_monster_name(cat, &format!("{}_copy", src.name));
+                Some(def)
+            })
+            .collect::<Vec<_>>()
     };
-    add_monster(app, new_def);
+    for def in new_defs {
+        add_monster(app, def);
+    }
 }
 
 fn add_monster_label(ui: &mut Ui, title: &str, font_size: f32, selected: bool) {
@@ -186,6 +199,89 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
         .size_range(min_size..=full_width * 0.8)
         .show_inside(ui, |ui| {
             ui.set_min_width(ui.available_width());
+
+            // Multi-selection: edit the common fields of every selected monster.
+            let multi: Vec<usize> = app.selected_monster_idxs.iter().copied().collect();
+            if multi.len() > 1 {
+                ui.heading("Edit Selected Monsters");
+                ui.label(format!("{} monsters selected", multi.len()));
+                ui.add_space(4.0);
+
+                // Name / Cost apply to every selected monster.
+                let first_name = app
+                    .working_monster_catalog
+                    .as_ref()
+                    .and_then(|c| c.monsters.get(multi[0]))
+                    .map(|d| d.name.clone())
+                    .unwrap_or_default();
+                let first_cost = app
+                    .working_monster_catalog
+                    .as_ref()
+                    .and_then(|c| c.monsters.get(multi[0]))
+                    .map(|d| d.cost)
+                    .unwrap_or(0.0);
+
+                let mut name = first_name;
+                let mut cost = first_cost;
+                let name_changed = ui
+                    .horizontal(|ui| {
+                        ui.label("Name:");
+                        ui.text_edit_singleline(&mut name).changed()
+                    })
+                    .inner;
+                let cost_changed = ui
+                    .horizontal(|ui| {
+                        ui.label("Cost:");
+                        ui.add(egui::DragValue::new(&mut cost).speed(1.0)).changed()
+                    })
+                    .inner;
+
+                if name_changed || cost_changed {
+                    if let Some(cat) = app.working_monster_catalog.as_mut() {
+                        for &idx in &multi {
+                            if let Some(d) = cat.monsters.get_mut(idx) {
+                                if name_changed {
+                                    d.name = name.clone();
+                                }
+                                if cost_changed {
+                                    d.cost = cost;
+                                }
+                            }
+                        }
+                        if name_changed {
+                            cat.by_name.clear();
+                            for (i, d) in cat.monsters.iter().enumerate() {
+                                cat.by_name.insert(d.name.clone(), i as i32);
+                            }
+                        }
+                    }
+                }
+                ui.add_space(4.0);
+                if ui.button("Remove all selected").clicked() {
+                    let mut to_remove = multi.clone();
+                    to_remove.sort_unstable();
+                    to_remove.reverse();
+                    if let Some(cat) = app.working_monster_catalog.as_mut() {
+                        for idx in &to_remove {
+                            if *idx < cat.monsters.len() {
+                                let name = cat.monsters[*idx].name.clone();
+                                cat.monsters.remove(*idx);
+                                app.monster_disabled.remove(&name);
+                            }
+                        }
+                        cat.by_name.clear();
+                        for (i, d) in cat.monsters.iter().enumerate() {
+                            cat.by_name.insert(d.name.clone(), i as i32);
+                        }
+                    }
+                    app.selected_monster_idxs.clear();
+                    app.selected_monster_idx = None;
+                }
+                ui.separator();
+                // With a multi-selection active, hide the single-monster editor so it doesn't give the false impression that changes apply to one monster.
+                return;
+            }
+
             if let Some(idx) = app.selected_monster_idx {
                 let vanilla_def = app
                     .vanilla_monster_catalog
@@ -283,18 +379,31 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
                         .collect();
                     matches.sort_by_key(|(_, _, _, st)| (*st != sel_sub) as i32);
 
-                    egui::ScrollArea::vertical().max_height(400.0).show(ui, |ui| {
-                        for (n, disp, _, st) in matches {
-                            let label = if *st == sel_sub {
-                                format!("{} ({})", disp, n)
-                            } else {
-                                format!("{} ({}) [sub {}]", disp, n, st)
-                            };
-                            if ui.selectable_label(false, label).clicked() {
-                                chosen = Some(n.clone());
+                    // Virtualized rows: only the rows visible in the scroll viewport are laid out each frame.
+                    let row_height = ui
+                        .text_style_height(&egui::TextStyle::Body)
+                        .max(ui.spacing().interact_size.y);
+                    egui::ScrollArea::vertical().max_height(400.0).show_rows(
+                        ui,
+                        row_height,
+                        matches.len(),
+                        |ui, row_range| {
+                            for i in row_range {
+                                let (n, disp, _, st) = matches[i];
+                                let label = if *st == sel_sub {
+                                    format!("{} ({})", disp, n)
+                                } else {
+                                    format!("{} ({}) [sub {}]", disp, n, st)
+                                };
+                                if ui
+                                    .add(egui::Button::selectable(false, label).truncate())
+                                    .clicked()
+                                {
+                                    chosen = Some(n.clone());
+                                }
                             }
-                        }
-                    });
+                        },
+                    );
                 });
             app.copy_picker_open = open;
             if let Some(src_name) = chosen {
@@ -354,18 +463,31 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
                         .collect();
                     matches.sort_by_key(|(_, _, _, st)| (*st != sel_sub) as i32);
 
-                    egui::ScrollArea::vertical().max_height(400.0).show(ui, |ui| {
-                        for (n, disp, _, st) in matches {
-                            let label = if *st == sel_sub {
-                                format!("{} ({})", disp, n)
-                            } else {
-                                format!("{} ({}) [sub {}]", disp, n, st)
-                            };
-                            if ui.selectable_label(false, label).clicked() {
-                                chosen = Some(n.clone());
+                    // Virtualized rows: only the rows visible in the scroll viewport are laid out each frame.
+                    let row_height = ui
+                        .text_style_height(&egui::TextStyle::Body)
+                        .max(ui.spacing().interact_size.y);
+                    egui::ScrollArea::vertical().max_height(400.0).show_rows(
+                        ui,
+                        row_height,
+                        matches.len(),
+                        |ui, row_range| {
+                            for i in row_range {
+                                let (n, disp, _, st) = matches[i];
+                                let label = if *st == sel_sub {
+                                    format!("{} ({})", disp, n)
+                                } else {
+                                    format!("{} ({}) [sub {}]", disp, n, st)
+                                };
+                                if ui
+                                    .add(egui::Button::selectable(false, label).truncate())
+                                    .clicked()
+                                {
+                                    chosen = Some(n.clone());
+                                }
                             }
-                        }
-                    });
+                        },
+                    );
                 });
             app.drops_copy_picker_open = open;
             if let Some(src_name) = chosen {
@@ -399,10 +521,7 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
             .open(&mut open)
             .show(ui.ctx(), |ui| {
                 ui.horizontal(|ui| {
-                    ui.checkbox(
-                        &mut app.drop_item_picker_materials_only,
-                        "Materials only",
-                    );
+                    ui.checkbox(&mut app.drop_item_picker_materials_only, "Materials only");
                     ui.label("Search:");
                     let resp = ui.text_edit_singleline(&mut app.drop_item_picker_search);
                     if app.drop_item_picker_focus {
@@ -446,36 +565,85 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
 
                 egui::ScrollArea::both()
                     .auto_shrink([false; 2])
-                    .show(ui, |ui| {
+                    .show_viewport(ui, |ui, viewport| {
+                        // Only items whose x-range intersects the visible viewport are laid out each frame.
+                        // Culled items still advance the grid cursor via allocate_space with the exact cell size, so positions, row heights and the scrollbar stay exact while the widget count stays proportional to the viewport.
+                        let icon_size = app.config.item_icon_size;
+                        let font_size = app.config.grid_font_size;
+                        let label_h =
+                            ui.fonts_mut(|f| f.row_height(&egui::FontId::proportional(font_size)));
+                        let spacing_y = ui.spacing().item_spacing.y;
+                        let pad_x = 2.0 * ui.spacing().button_padding.x;
+                        let pad_y = 2.0 * ui.spacing().button_padding.y;
+                        let overscan = 3.0 * (icon_size + pad_x);
+                        let vp_min = viewport.min.x - overscan;
+                        let vp_max = viewport.max.x + overscan;
+
                         for (cat_name, entries) in grouped {
                             ui.style_mut().interaction.selectable_labels = false;
-                            ui.label(egui::RichText::new(&cat_name).strong().size(app.config.category_font_size));
+                            ui.label(
+                                egui::RichText::new(&cat_name)
+                                    .strong()
+                                    .size(app.config.category_font_size),
+                            );
                             egui::Grid::new(("drop_pick_grid", cat_name))
                                 .spacing([8.0, 8.0])
                                 .show(ui, |ui| {
+                                    let mut x = 0.0f32;
                                     for d in entries {
+                                        let has_icon = app
+                                            .item_atlas
+                                            .as_ref()
+                                            .and_then(|a| a.icon_uv(d))
+                                            .is_some()
+                                            || (app.image_editor.capacity as i32 > 0
+                                                && d.img >= app.image_editor.capacity as i32
+                                                && app.image_editor.icons.iter().any(
+                                                    |(local, _)| {
+                                                        *local
+                                                            == d.img
+                                                                - app.image_editor.capacity as i32
+                                                    },
+                                                ));
+                                        let display = d
+                                            .title
+                                            .first()
+                                            .filter(|t| !t.is_empty())
+                                            .cloned()
+                                            .unwrap_or_else(|| d.name.clone());
+                                        let word_count = display.split_whitespace().count();
+                                        // Image buttons are icon_size + button frame margins wide; placeholders are icon_size.
+                                        let item_w = if has_icon {
+                                            icon_size + pad_x
+                                        } else {
+                                            icon_size
+                                        };
+                                        let item_h = if has_icon {
+                                            icon_size + pad_y
+                                        } else {
+                                            icon_size
+                                        } + word_count as f32 * (label_h + spacing_y);
+                                        let start = x;
+                                        let end = x + item_w;
+                                        x = end + 8.0;
+                                        if end < vp_min || start > vp_max {
+                                            ui.allocate_space(egui::vec2(item_w, item_h));
+                                            continue;
+                                        }
+
                                         ui.vertical(|ui| {
                                             let response = crate::tabs::items::draw_image_button(
                                                 ui,
                                                 app.item_atlas.as_ref(),
                                                 Some(d),
-                                                app.config.item_icon_size,
+                                                icon_size,
                                                 &app.image_editor,
                                             );
                                             if response.clicked() {
                                                 chosen = Some(d.name.clone());
                                             }
-                                            let display = d
-                                                .title
-                                                .first()
-                                                .filter(|t| !t.is_empty())
-                                                .cloned()
-                                                .unwrap_or_else(|| d.name.clone());
                                             crate::tabs::items::add_item_label(
-                                                ui,
-                                                &display,
-                                                app.config.grid_font_size,
-                                                false,
+                                                ui, &display, font_size, false,
                                             );
                                         });
                                     }
@@ -520,6 +688,7 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
         ui.horizontal(|ui| {
             ui.label("Search:");
             ui.text_edit_singleline(&mut app.monster_search_filter);
+            crate::tabs::multisel::mouse_help_button(ui, &[]);
         });
         ui.checkbox(
             &mut app.show_only_changed_monsters,
@@ -534,10 +703,104 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
             let has_sel = app.selected_monster_idx.is_some();
             if ui
                 .add_enabled(has_sel, egui::Button::new("Clone Selected"))
-                .on_hover_text("Duplicate the selected monster under a new unique name")
+                .on_hover_text("Duplicate the selected monster(s) under new unique names")
                 .clicked()
             {
                 clone_selected_monster(app);
+            }
+
+            // Multi-select: disable/enable/delete selected / remove all by type.
+            let multi_count = app.selected_monster_idxs.len();
+            if multi_count > 1 || !app.monsters_remove_all_open {
+                if multi_count > 1 {
+                    // Disable / Enable selected: toggles the disabled set for all selected.
+                    let all_disabled = app.selected_monster_idxs.iter().all(|&idx| {
+                        app.working_monster_catalog
+                            .as_ref()
+                            .and_then(|c| c.monsters.get(idx))
+                            .is_some_and(|d| app.monster_disabled.contains(&d.name))
+                    });
+                    if all_disabled {
+                        if ui
+                            .button(format!("Enable selected ({})", multi_count))
+                            .on_hover_text("Re-include the selected monsters in the game")
+                            .clicked()
+                        {
+                            for &idx in &app.selected_monster_idxs {
+                                if let Some(d) = app
+                                    .working_monster_catalog
+                                    .as_ref()
+                                    .and_then(|c| c.monsters.get(idx))
+                                {
+                                    app.monster_disabled.remove(&d.name);
+                                }
+                            }
+                        }
+                    } else if ui
+                        .button(format!("Disable selected ({})", multi_count))
+                        .on_hover_text("Exclude the selected monsters from the game but keep them (re-enableable)")
+                        .clicked()
+                    {
+                        for &idx in &app.selected_monster_idxs {
+                            if let Some(d) = app
+                                .working_monster_catalog
+                                .as_ref()
+                                .and_then(|c| c.monsters.get(idx))
+                            {
+                                app.monster_disabled.insert(d.name.clone());
+                            }
+                        }
+                    }
+                    // Delete selected: only non-vanilla monsters that are already disabled, mirroring the single-item delete rule.
+                    let deletable: Vec<usize> = app
+                        .selected_monster_idxs
+                        .iter()
+                        .copied()
+                        .filter(|&idx| {
+                            app.working_monster_catalog
+                                .as_ref()
+                                .and_then(|c| c.monsters.get(idx))
+                                .is_some_and(|d| {
+                                    !app.vanilla_monster_catalog.as_ref().map_or(false, |v| {
+                                        v.by_name.contains_key(&d.name)
+                                    }) && app.monster_disabled.contains(&d.name)
+                                })
+                        })
+                        .collect();
+                    if !deletable.is_empty()
+                        && ui
+                            .button(format!("Delete selected ({})", deletable.len()))
+                            .on_hover_text("Permanently remove the selected non-vanilla monsters (they must be disabled first)")
+                            .clicked()
+                    {
+                        let mut to_remove = deletable;
+                        to_remove.sort_unstable();
+                        to_remove.reverse();
+                        if let Some(cat) = app.working_monster_catalog.as_mut() {
+                            for idx in &to_remove {
+                                if *idx < cat.monsters.len() {
+                                    let name = cat.monsters[*idx].name.clone();
+                                    cat.monsters.remove(*idx);
+                                    app.monster_disabled.remove(&name);
+                                }
+                            }
+                            cat.by_name.clear();
+                            for (i, d) in cat.monsters.iter().enumerate() {
+                                cat.by_name.insert(d.name.clone(), i as i32);
+                            }
+                        }
+                        app.selected_monster_idxs.clear();
+                        app.selected_monster_idx = None;
+                    }
+                }
+                if ui
+                    .button("Remove all by type...")
+                    .on_hover_text("Open a picker to remove every monster of the chosen type-subtype categories")
+                    .clicked()
+                {
+                    app.monsters_remove_all_open = true;
+                    app.monsters_remove_all_types.clear();
+                }
             }
 
             // Disable (reversible) / Enable / Delete, mirroring the Items tab.
@@ -630,9 +893,34 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
         let mut categories: Vec<_> = grouped.keys().cloned().collect();
         categories.sort();
 
+        // Selection gesture state (click / ctrl+click / shift+click / shift+drag box).
+        let mut gsel = std::mem::take(&mut app.monsters_grid_sel);
+        gsel.begin(ui);
+
+        // Full display order (all filtered monsters, not just visible ones) so shift+click ranges work across scrolled-out entries.
+        gsel.display_order.clear();
+        for cat in &categories {
+            for (idx, _) in &grouped[cat] {
+                gsel.display_order.push(*idx);
+            }
+        }
+
         egui::ScrollArea::both()
+            .scroll_source(crate::tabs::multisel::grid_scroll_source(ui))
             .auto_shrink([false; 2])
-            .show(ui, |ui| {
+            .show_viewport(ui, |ui, viewport| {
+                // Only monsters whose x-range intersects the visible viewport are laid out each frame.
+                // Culled monsters still advance the grid cursor via allocate_space with the exact cell size, so positions, row heights and the scrollbar stay exact while the widget count stays proportional to the viewport.
+                let icon_size = app.config.item_icon_size;
+                let font_size = app.config.grid_font_size;
+                let label_h = ui.fonts_mut(|f| f.row_height(&egui::FontId::proportional(font_size)));
+                let spacing_y = ui.spacing().item_spacing.y;
+                let pad_x = 2.0 * ui.spacing().button_padding.x;
+                let pad_y = 2.0 * ui.spacing().button_padding.y;
+                let overscan = 3.0 * (icon_size + pad_x);
+                let vp_min = viewport.min.x - overscan;
+                let vp_max = viewport.max.x + overscan;
+
                 for cat in categories {
                     let entries = grouped.get(&cat).unwrap();
                     ui.style_mut().interaction.selectable_labels = false;
@@ -643,7 +931,28 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
                     );
 
                     egui::Grid::new(&cat).spacing([8.0, 8.0]).show(ui, |ui| {
+                        let mut x = 0.0f32;
                         for (orig_idx, def) in entries {
+                            let has_icon = !def.texture.is_empty();
+                            let display_name = def
+                                .titles
+                                .first()
+                                .filter(|t| !t.is_empty())
+                                .cloned()
+                                .unwrap_or_else(|| def.name.clone());
+                            let word_count = display_name.split_whitespace().count();
+                            // Image buttons are icon_size + button frame margins wide; placeholders are icon_size.
+                            let item_w = if has_icon { icon_size + pad_x } else { icon_size };
+                            let item_h = if has_icon { icon_size + pad_y } else { icon_size }
+                                + word_count as f32 * (label_h + spacing_y);
+                            let start = x;
+                            let end = x + item_w;
+                            x = end + 8.0;
+                            if end < vp_min || start > vp_max {
+                                ui.allocate_space(egui::vec2(item_w, item_h));
+                                continue;
+                            }
+
                             ui.vertical(|ui| {
                                 let tex = if def.texture.is_empty() {
                                     None
@@ -657,43 +966,36 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
                                 let response = if let Some(tex) = &tex {
                                     ui.add(egui::Button::image(
                                         egui::Image::from_texture(&tex.clone()).fit_to_exact_size(
-                                            egui::vec2(
-                                                app.config.item_icon_size,
-                                                app.config.item_icon_size,
-                                            ),
+                                            egui::vec2(icon_size, icon_size),
                                         ),
                                     ))
                                 } else {
                                     // placeholder while loading
                                     ui.allocate_response(
-                                        egui::vec2(
-                                            app.config.item_icon_size,
-                                            app.config.item_icon_size,
-                                        ),
+                                        egui::vec2(icon_size, icon_size),
                                         egui::Sense::click(),
                                     )
                                 };
                                 let btn_w = response.rect.width();
-                                if response.clicked() {
-                                    app.selected_monster_idx = Some(*orig_idx);
-                                }
+                                gsel.cell(response.rect, *orig_idx);
+                                let is_sel = app.selected_monster_idx == Some(*orig_idx)
+                                    || app.selected_monster_idxs.contains(orig_idx)
+                                    || gsel.is_box_hit(orig_idx);
+                                crate::tabs::multisel::paint_sel_outline(
+                                    ui,
+                                    response.rect,
+                                    is_sel,
+                                );
                                 ui.set_max_width(btn_w);
-                                let display_name = def
-                                    .titles
-                                    .first()
-                                    .filter(|t| !t.is_empty())
-                                    .cloned()
-                                    .unwrap_or_else(|| def.name.clone());
                                 add_monster_label(
                                     ui,
                                     &display_name,
-                                    app.config.grid_font_size,
-                                    app.selected_monster_idx == Some(*orig_idx),
+                                    font_size,
+                                    is_sel,
                                 );
                                 if app.monster_disabled.contains(&def.name) {
                                     ui.label(
                                         egui::RichText::new("(disabled)")
-                                            
                                             .color(egui::Color32::from_rgb(220, 120, 120)),
                                     );
                                 }
@@ -703,8 +1005,112 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
 
                     ui.add_space(8.0);
                 }
+
+                gsel.update_target();
+                gsel.paint(ui);
+                gsel.end(ui, &mut app.selected_monster_idxs, &mut app.selected_monster_idx);
+                app.monsters_grid_sel = gsel;
             });
     });
+
+    // "Remove all by type" picker window.
+    if app.monsters_remove_all_open {
+        let mut open = app.monsters_remove_all_open;
+        let mut do_remove = false;
+        egui::Window::new("Remove all by type")
+            .collapsible(false)
+            .resizable(true)
+            .default_width(360.0)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .open(&mut open)
+            .show(ui.ctx(), |ui| {
+                let mut cats: Vec<String> = Vec::new();
+                if let Some(cat) = app.working_monster_catalog.as_ref() {
+                    for d in &cat.monsters {
+                        let c = format!(
+                            "{} - SubType {}",
+                            monster_names::get_monster_type_name(d.type_),
+                            d.sub_type
+                        );
+                        if !cats.contains(&c) {
+                            cats.push(c);
+                        }
+                    }
+                }
+                cats.sort();
+                for cat in &cats {
+                    let mut checked = app.monsters_remove_all_types.contains(cat);
+                    if ui.checkbox(&mut checked, cat).changed() {
+                        if checked {
+                            app.monsters_remove_all_types.insert(cat.clone());
+                        } else {
+                            app.monsters_remove_all_types.remove(cat);
+                        }
+                    }
+                }
+                ui.separator();
+                if ui
+                    .add_enabled(
+                        !app.monsters_remove_all_types.is_empty(),
+                        egui::Button::new("Remove"),
+                    )
+                    .clicked()
+                {
+                    do_remove = true;
+                }
+            });
+        app.monsters_remove_all_open = open;
+        if do_remove {
+            let mut to_remove: Vec<usize> = Vec::new();
+            let mut vanilla_blocked = 0usize;
+            if let Some(cat) = app.working_monster_catalog.as_ref() {
+                for (idx, d) in cat.monsters.iter().enumerate() {
+                    let c = format!(
+                        "{} - SubType {}",
+                        monster_names::get_monster_type_name(d.type_),
+                        d.sub_type
+                    );
+                    if app.monsters_remove_all_types.contains(&c) {
+                        // Vanilla monsters can only be disabled, never removed.
+                        if app
+                            .vanilla_monster_catalog
+                            .as_ref()
+                            .map_or(false, |v| v.by_name.contains_key(&d.name))
+                        {
+                            vanilla_blocked += 1;
+                            app.monster_disabled.insert(d.name.clone());
+                        } else {
+                            to_remove.push(idx);
+                        }
+                    }
+                }
+            }
+            if vanilla_blocked > 0 {
+                app.error_message = Some(format!(
+                    "{} vanilla monster(s) were disabled instead of removed (vanilla monsters cannot be deleted).",
+                    vanilla_blocked
+                ));
+            }
+            to_remove.sort_unstable();
+            to_remove.reverse();
+            if let Some(cat) = app.working_monster_catalog.as_mut() {
+                for idx in &to_remove {
+                    if *idx < cat.monsters.len() {
+                        let name = cat.monsters[*idx].name.clone();
+                        cat.monsters.remove(*idx);
+                        app.monster_disabled.remove(&name);
+                    }
+                }
+                cat.by_name.clear();
+                for (i, d) in cat.monsters.iter().enumerate() {
+                    cat.by_name.insert(d.name.clone(), i as i32);
+                }
+            }
+            app.selected_monster_idxs.clear();
+            app.selected_monster_idx = None;
+            app.monsters_remove_all_open = false;
+        }
+    }
 }
 
 fn monster_values_differ(a: &MonsterFieldValue, b: &MonsterFieldValue) -> bool {
@@ -1401,8 +1807,7 @@ fn draw_hurtbox_schematic(ui: &mut Ui, def: &MonsterDef, preview: Option<&Hitbox
     painter.rect_filled(rect, 4.0, Color32::from_gray(28));
 
     let pad = 18.0;
-    let scale =
-        ((rect.width() - 2.0 * pad) / total_w).min((rect.height() - 2.0 * pad) / total_h);
+    let scale = ((rect.width() - 2.0 * pad) / total_w).min((rect.height() - 2.0 * pad) / total_h);
     if !scale.is_finite() || scale <= 0.0 {
         return;
     }
@@ -1431,7 +1836,11 @@ fn draw_hurtbox_schematic(ui: &mut Ui, def: &MonsterDef, preview: Option<&Hitbox
     let top = origin_y - bh * scale;
     let bottom = origin_y + bsh * scale;
     let box_rect = Rect::from_min_max(Pos2::new(left, top), Pos2::new(right, bottom));
-    painter.rect_filled(box_rect, 0.0, Color32::from_rgba_unmultiplied(220, 60, 60, 40));
+    painter.rect_filled(
+        box_rect,
+        0.0,
+        Color32::from_rgba_unmultiplied(220, 60, 60, 40),
+    );
     painter.rect_stroke(
         box_rect,
         0.0,
@@ -1443,7 +1852,10 @@ fn draw_hurtbox_schematic(ui: &mut Ui, def: &MonsterDef, preview: Option<&Hitbox
     if sw > 0.0 {
         let half = sw * 0.5 * scale;
         painter.line_segment(
-            [Pos2::new(cx - half, origin_y), Pos2::new(cx + half, origin_y)],
+            [
+                Pos2::new(cx - half, origin_y),
+                Pos2::new(cx + half, origin_y),
+            ],
             Stroke::new(3.0_f32, Color32::from_rgba_unmultiplied(120, 120, 180, 160)),
         );
     }

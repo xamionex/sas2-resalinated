@@ -4,14 +4,15 @@ use crate::catalog::{
 };
 use crate::charm_boost::CharmBoostRange;
 use crate::config::{
-    default_category_font_size, default_drag_sensitivity, default_grid_font_size,
-    default_item_icon_size, default_sidebar_font_size, default_tabs_font_size, ResalinatedConfig,
+    ResalinatedConfig, default_category_font_size, default_drag_sensitivity,
+    default_grid_font_size, default_item_icon_size, default_sidebar_font_size,
+    default_tabs_font_size,
 };
 use crate::magic_slot::MagicSlotOverrides;
-use crate::preset::{guid_folder_name, PresetManager, PresetMeta};
+use crate::preset::{PresetManager, PresetMeta, guid_folder_name};
 use crate::tabs::{
-    animations, artifacts, images, items, manager, monsters, preset_info, shop, talismans,
-    textures, Tab,
+    Tab, animations, artifacts, images, items, manager, monsters, preset_info, shop, talismans,
+    textures,
 };
 use eframe::egui;
 use rfd::FileDialog;
@@ -73,16 +74,10 @@ fn dialog_delta(
         let changed = match vanilla_npc {
             Some(v) => {
                 // Compare only the store scripts (the shop-relevant part).
-                let v_scripts: Vec<&str> = v
-                    .nodes
-                    .iter()
-                    .map(|n| n.store_script.as_str())
-                    .collect();
-                let w_scripts: Vec<&str> = npc
-                    .nodes
-                    .iter()
-                    .map(|n| n.store_script.as_str())
-                    .collect();
+                let v_scripts: Vec<&str> =
+                    v.nodes.iter().map(|n| n.store_script.as_str()).collect();
+                let w_scripts: Vec<&str> =
+                    npc.nodes.iter().map(|n| n.store_script.as_str()).collect();
                 v_scripts != w_scripts
             }
             None => true,
@@ -95,9 +90,7 @@ fn dialog_delta(
 }
 
 /// Merge shop edits from all enabled presets onto the vanilla dialog catalog.
-fn merge_dialog_edits(
-    app: &ResalinatedApp,
-) -> Result<sas2_parser::dialog::DialogCatalog, String> {
+fn merge_dialog_edits(app: &ResalinatedApp) -> Result<sas2_parser::dialog::DialogCatalog, String> {
     let vanilla = app
         .vanilla_dialog
         .as_ref()
@@ -107,7 +100,10 @@ fn merge_dialog_edits(
         if folder_name == "Vanilla (Base)" {
             continue;
         }
-        if let Some(data) = app.preset_manager.get_preset_file(folder_name, "shop_edits.zdx") {
+        if let Some(data) = app
+            .preset_manager
+            .get_preset_file(folder_name, "shop_edits.zdx")
+        {
             if data.is_empty() {
                 continue;
             }
@@ -147,6 +143,14 @@ pub struct ResalinatedApp {
     pub artifact_boosts: HashMap<i32, crate::artifact_boost::ArtifactBoostRange>,
     // Items tab
     pub selected_item_idx: Option<usize>,
+    /// Multi-selected item indices (right-click toggles).
+    pub selected_item_idxs: HashSet<usize>,
+    /// Right-button gesture state for the items grid.
+    pub items_grid_sel: crate::tabs::multisel::GridSel<usize>,
+    /// When true, the "Remove all by type" picker window is open.
+    pub items_remove_all_open: bool,
+    /// Item type-subtype categories checked in the remove-all picker.
+    pub items_remove_all_types: HashSet<String>,
     pub search_filter: String,
     pub magic_slot_overrides: HashMap<String, HashMap<i32, MagicSlotOverrides>>,
     /// Items the user marked as sold in shops: item name -> optional flag requirement
@@ -176,6 +180,14 @@ pub struct ResalinatedApp {
     pub vanilla_monster_catalog: Option<MonsterCatalog>,
     pub working_monster_catalog: Option<MonsterCatalog>,
     pub selected_monster_idx: Option<usize>,
+    /// Multi-selected monster indices (right-click toggles).
+    pub selected_monster_idxs: HashSet<usize>,
+    /// Right-button gesture state for the monsters grid.
+    pub monsters_grid_sel: crate::tabs::multisel::GridSel<usize>,
+    /// When true, the "Remove all by type" picker window is open.
+    pub monsters_remove_all_open: bool,
+    /// Monster type-subtype categories checked in the remove-all picker.
+    pub monsters_remove_all_types: HashSet<String>,
     pub monster_search_filter: String,
     pub show_only_changed_monsters: bool,
     pub item_atlas: Option<ItemAtlas>,
@@ -227,8 +239,20 @@ pub struct ResalinatedApp {
     pub shop_show_only_modified: bool,
     /// Selected item name in the All Shops grid (edited in the sidebar).
     pub shop_all_selected: Option<String>,
+    /// Multi-selected item names in the All Shops grid (right-click toggles).
+    pub shop_all_selected_multi: HashSet<String>,
+    /// Right-button gesture state for the All Shops grid.
+    pub shop_all_grid_sel: crate::tabs::multisel::GridSel<String>,
     /// Selected shelf entry (node_idx, entry_idx) for the edit panel.
     pub shop_selected_entry: Option<(usize, usize)>,
+    /// Multi-selected shelf entries per merchant: npc index -> set of (node_idx, entry_idx).
+    /// Keyed by npc so switching merchants does not carry the selection over.
+    pub shop_selected_entries_multi:
+        HashMap<usize, HashSet<(usize, usize)>>,
+    /// Right-button gesture state for the merchant shelf grid.
+    pub shop_shelf_grid_sel: crate::tabs::multisel::GridSel<(usize, usize)>,
+    /// Last viewed merchant in the shop tab (to reset per-merchant gesture state).
+    pub shop_last_npc: Option<usize>,
     /// "Copy logic from" picker (shared by the Items and Monsters tabs; only the active tab renders it).
     pub copy_picker_open: bool,
     pub copy_picker_search: String,
@@ -264,6 +288,10 @@ impl ResalinatedApp {
             charm_boosts: HashMap::new(),
             artifact_boosts: HashMap::new(),
             selected_item_idx: None,
+            selected_item_idxs: HashSet::new(),
+            items_grid_sel: crate::tabs::multisel::GridSel::default(),
+            items_remove_all_open: false,
+            items_remove_all_types: HashSet::new(),
             search_filter: String::new(),
             magic_slot_overrides: HashMap::new(),
             shop_additions: HashMap::new(),
@@ -290,6 +318,10 @@ impl ResalinatedApp {
             vanilla_monster_catalog: None,
             working_monster_catalog: None,
             selected_monster_idx: None,
+            selected_monster_idxs: HashSet::new(),
+            monsters_grid_sel: crate::tabs::multisel::GridSel::default(),
+            monsters_remove_all_open: false,
+            monsters_remove_all_types: HashSet::new(),
             monster_search_filter: String::new(),
             show_only_changed_monsters: false,
             item_atlas: None,
@@ -322,7 +354,12 @@ impl ResalinatedApp {
             shop_all_search: String::new(),
             shop_show_only_modified: false,
             shop_all_selected: None,
+            shop_all_selected_multi: HashSet::new(),
+            shop_all_grid_sel: crate::tabs::multisel::GridSel::default(),
             shop_selected_entry: None,
+            shop_selected_entries_multi: HashMap::new(),
+            shop_shelf_grid_sel: crate::tabs::multisel::GridSel::default(),
+            shop_last_npc: None,
             shop_picker_target: None,
             copy_picker_open: false,
             copy_picker_search: String::new(),
@@ -438,9 +475,11 @@ impl ResalinatedApp {
                 continue;
             };
             for e in map.entities {
-                self.merchant_locations
-                    .entry(e.texture.clone())
-                    .or_insert((stem.to_string(), e.loc.0, e.loc.1));
+                self.merchant_locations.entry(e.texture.clone()).or_insert((
+                    stem.to_string(),
+                    e.loc.0,
+                    e.loc.1,
+                ));
             }
         }
     }
@@ -468,9 +507,8 @@ impl ResalinatedApp {
     /// Snapshot the working-assets folder into a preset's `assets/` folder (replacing it).
     fn save_assets_to_preset(&self, folder_name: &str) -> Result<(), String> {
         let working = crate::assets::working_root();
-        let dst = crate::assets::preset_assets_root(
-            &self.preset_manager.presets_dir().join(folder_name),
-        );
+        let dst =
+            crate::assets::preset_assets_root(&self.preset_manager.presets_dir().join(folder_name));
         crate::assets::remove_dir_if_exists(&dst);
         crate::assets::copy_dir_all(&working, &dst)
             .map_err(|e| format!("Failed to copy assets into preset: {}", e))?;
@@ -481,9 +519,8 @@ impl ResalinatedApp {
     fn load_assets_from_preset(&mut self, folder_name: &str) {
         let working = crate::assets::working_root();
         crate::assets::remove_dir_if_exists(&working);
-        let src = crate::assets::preset_assets_root(
-            &self.preset_manager.presets_dir().join(folder_name),
-        );
+        let src =
+            crate::assets::preset_assets_root(&self.preset_manager.presets_dir().join(folder_name));
         let _ = crate::assets::copy_dir_all(&src, &working);
         self.reset_asset_editors();
     }
@@ -519,11 +556,15 @@ impl ResalinatedApp {
             if !pa.exists() {
                 continue;
             }
-            let _ = crate::assets::copy_dir_all(&pa.join(crate::assets::TEXTURES_DIR),
-                &cfg.join(crate::assets::TEXTURES_DIR));
+            let _ = crate::assets::copy_dir_all(
+                &pa.join(crate::assets::TEXTURES_DIR),
+                &cfg.join(crate::assets::TEXTURES_DIR),
+            );
             let _ = crate::assets::copy_dir_all(&pa.join("Character"), &cfg.join("Character"));
-            let _ = crate::assets::copy_dir_all(&pa.join(crate::assets::ICONS_DIR),
-                &cfg.join(crate::assets::ICONS_DIR));
+            let _ = crate::assets::copy_dir_all(
+                &pa.join(crate::assets::ICONS_DIR),
+                &cfg.join(crate::assets::ICONS_DIR),
+            );
             let m = pa.join(crate::assets::MASTER_REL);
             if m.exists() {
                 master_paths.push(m);
@@ -739,8 +780,10 @@ impl ResalinatedApp {
                 .preset_manager
                 .get_preset_file(folder_name, "charm_boosts.json")
             {
-                let boosts: HashMap<i32, CharmBoostRange> = serde_json::from_slice(&data)
-                    .map_err(|e| format!("Invalid charm_boosts.json in '{}': {}", folder_name, e))?;
+                let boosts: HashMap<i32, CharmBoostRange> =
+                    serde_json::from_slice(&data).map_err(|e| {
+                        format!("Invalid charm_boosts.json in '{}': {}", folder_name, e)
+                    })?;
                 for (flag, range) in boosts {
                     merged.insert(flag, range);
                 }
@@ -949,8 +992,7 @@ impl ResalinatedApp {
             let monster_delta = self.build_delta_monster_catalog()?;
             self.preset_manager
                 .save_preset_file(folder_name, "monsters.zms", &monster_delta)?;
-            let mut monster_disabled: Vec<String> =
-                self.monster_disabled.iter().cloned().collect();
+            let mut monster_disabled: Vec<String> = self.monster_disabled.iter().cloned().collect();
             monster_disabled.sort();
             let monster_dis_bytes = serde_json::to_vec(&monster_disabled)
                 .map_err(|e| format!("Failed to serialize monster disabled: {}", e))?;
@@ -972,8 +1014,11 @@ impl ResalinatedApp {
 
         let artifact_bytes = serde_json::to_vec(&self.artifact_boosts)
             .map_err(|e| format!("Failed to serialize artifact boosts: {}", e))?;
-        self.preset_manager
-            .save_preset_file(folder_name, "artifact_boosts.json", &artifact_bytes)?;
+        self.preset_manager.save_preset_file(
+            folder_name,
+            "artifact_boosts.json",
+            &artifact_bytes,
+        )?;
 
         let shop_bytes = serde_json::to_vec(&self.shop_additions)
             .map_err(|e| format!("Failed to serialize shop additions: {}", e))?;
@@ -991,9 +1036,9 @@ impl ResalinatedApp {
                     self.preset_manager
                         .save_preset_file(folder_name, "shop_edits.zdx", &bytes)?;
                 } else {
-                    let _ = self
-                        .preset_manager
-                        .save_preset_file(folder_name, "shop_edits.zdx", &[]);
+                    let _ =
+                        self.preset_manager
+                            .save_preset_file(folder_name, "shop_edits.zdx", &[]);
                 }
             }
         }
@@ -1119,9 +1164,16 @@ impl ResalinatedApp {
                         self.error_message = Some(format!("Failed to create config dir: {}", e));
                     } else {
                         for (file, select) in [
-                            ("magic_damage.json", &(|o: &MagicSlotOverrides| o.damage) as &dyn Fn(&MagicSlotOverrides) -> f32),
+                            (
+                                "magic_damage.json",
+                                &(|o: &MagicSlotOverrides| o.damage)
+                                    as &dyn Fn(&MagicSlotOverrides) -> f32,
+                            ),
                             ("magic_cost.json", &(|o: &MagicSlotOverrides| o.cost)),
-                            ("magic_cooldown.json", &(|o: &MagicSlotOverrides| o.cooldown)),
+                            (
+                                "magic_cooldown.json",
+                                &(|o: &MagicSlotOverrides| o.cooldown),
+                            ),
                         ] {
                             match Self::magic_slot_json(&merged, select) {
                                 Ok(json) => {
@@ -1148,8 +1200,7 @@ impl ResalinatedApp {
                 self.error_message = Some(format!("Failed to create config dir: {}", e));
             } else {
                 if let Err(e) = std::fs::write(config_dir.join("shop_additions.txt"), shop_text) {
-                    self.error_message =
-                        Some(format!("Failed to write shop_additions.txt: {}", e));
+                    self.error_message = Some(format!("Failed to write shop_additions.txt: {}", e));
                 }
                 if let Err(e) = std::fs::write(config_dir.join("craft_additions.txt"), craft_text) {
                     self.error_message =
@@ -1404,7 +1455,8 @@ impl ResalinatedApp {
                         } else {
                             match sas2_parser::dialog::DialogCatalog::load_from_bytes(&data) {
                                 Ok(delta) => {
-                                    let mut merged = self.vanilla_dialog.clone().unwrap_or_default();
+                                    let mut merged =
+                                        self.vanilla_dialog.clone().unwrap_or_default();
                                     for npc in delta.npcs {
                                         if let Some(existing) = merged.find_npc_mut(&npc.name) {
                                             *existing = npc;

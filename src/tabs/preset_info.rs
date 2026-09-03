@@ -28,10 +28,7 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
         }
     });
     app.edit_meta.folder_override = app.folder_override_enabled;
-    ui.label(format!(
-        "Full path: {}",
-        app.preset_folder_path().display()
-    ));
+    ui.label(format!("Full path: {}", app.preset_folder_path().display()));
 
     ui.horizontal(|ui| {
         ui.label("Name:");

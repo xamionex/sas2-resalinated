@@ -1,8 +1,8 @@
 use sas2_parser::loot_catalog::LootField;
 use std::collections::HashMap;
 
-/// Per-weapon, per-magic-slot overrides. All values are multipliers (1.0 = vanilla). The loader
-/// treats a value of 1.0 (or <= 0) as "no change", so unset fields are harmless.
+/// Per-weapon, per-magic-slot overrides. All values are multipliers (1.0 = vanilla).
+/// The loader treats a value of 1.0 (or <= 0) as "no change", so unset fields are harmless.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct MagicSlotOverrides {
     #[serde(default = "default_mul")]
