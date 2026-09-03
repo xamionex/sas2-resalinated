@@ -51,7 +51,8 @@ fn main() -> eframe::Result<()> {
     }
 
     let config = ResalinatedConfig::load();
-    let mut builder = egui::ViewportBuilder::default().with_title("SaS2 Resalinated");
+    let mut builder = egui::ViewportBuilder::default()
+        .with_title(format!("SaS2 Resalinated (v{})", env!("CARGO_PKG_VERSION")));
     if config.save_window_position {
         if let Some([x, y]) = config.window_pos {
             builder = builder.with_position(egui::pos2(x, y));
