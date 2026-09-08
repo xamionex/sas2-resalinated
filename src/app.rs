@@ -190,6 +190,9 @@ pub struct ResalinatedApp {
     pub monsters_remove_all_types: HashSet<String>,
     pub monster_search_filter: String,
     pub show_only_changed_monsters: bool,
+    /// Per-monster, per-field multipliers (monster name -> field id -> multiplier).
+    /// Applied by the loader when the game reads the field; 1.0 = unchanged.
+    pub monster_field_mults: HashMap<String, HashMap<i32, f32>>,
     pub item_atlas: Option<ItemAtlas>,
     pub monster_texture_cache: MonsterTextureCache,
     pub settings_open: bool,
@@ -322,6 +325,7 @@ impl ResalinatedApp {
             monsters_remove_all_types: HashSet::new(),
             monster_search_filter: String::new(),
             show_only_changed_monsters: false,
+            monster_field_mults: HashMap::new(),
             item_atlas: None,
             monster_texture_cache: MonsterTextureCache::new(),
             settings_open: false,
@@ -843,6 +847,34 @@ impl ResalinatedApp {
         Ok(merged)
     }
 
+    /// Merge monster field multipliers from all enabled presets (later ones override earlier ones).
+    fn merged_monster_field_mults(
+        &self,
+    ) -> Result<HashMap<String, HashMap<i32, f32>>, String> {
+        let mut merged: HashMap<String, HashMap<i32, f32>> = HashMap::new();
+        for folder_name in self.preset_manager.enabled_presets() {
+            if folder_name == "Vanilla (Base)" {
+                continue;
+            }
+            if let Some(data) = self
+                .preset_manager
+                .get_preset_file(folder_name, "monster_field_mults.json")
+            {
+                let mults: HashMap<String, HashMap<i32, f32>> =
+                    serde_json::from_slice(&data).map_err(|e| {
+                        format!("Invalid monster_field_mults.json in '{}': {}", folder_name, e)
+                    })?;
+                for (monster, fields) in mults {
+                    let entry = merged.entry(monster).or_default();
+                    for (field_id, mul) in fields {
+                        entry.insert(field_id, mul);
+                    }
+                }
+            }
+        }
+        Ok(merged)
+    }
+
     /// Serialize one magic slot value (selected by `select`) into the weapon -> {x,y,b} format the loader reads.
     /// Only non-vanilla (!= 1.0) values are written to keep the files small.
     fn magic_slot_json(
@@ -1000,6 +1032,10 @@ impl ResalinatedApp {
                 &monster_dis_bytes,
             )?;
         }
+        let mult_bytes = serde_json::to_vec(&self.monster_field_mults)
+            .map_err(|e| format!("Failed to serialize monster field multipliers: {}", e))?;
+        self.preset_manager
+            .save_preset_file(folder_name, "monster_field_mults.json", &mult_bytes)?;
         let magic_bytes = serde_json::to_vec(&self.magic_slot_overrides)
             .map_err(|e| format!("Failed to serialize magic overrides: {}", e))?;
         self.preset_manager
@@ -1187,6 +1223,42 @@ impl ResalinatedApp {
                 }
             }
             Err(e) => self.error_message = Some(e),
+        }
+
+        // Write monster_field_mults.json (per-monster, per-field multipliers).
+        // The in-memory edits (Monsters tab) are layered on top of the preset files so "Apply Now" reflects unsaved edits, matching how the other tabs behave.
+        let mut merged_mults = match self.merged_monster_field_mults() {
+            Ok(m) => m,
+            Err(e) => {
+                self.error_message = Some(e);
+                HashMap::new()
+            }
+        };
+        for (monster, fields) in &self.monster_field_mults {
+            let entry = merged_mults.entry(monster.clone()).or_default();
+            for (field_id, mul) in fields {
+                entry.insert(*field_id, *mul);
+            }
+        }
+        if let Some(gp) = &self.game_path {
+            let config_dir = gp.join("BepInEx/config/amione.SaS2Resalter");
+            if let Err(e) = std::fs::create_dir_all(&config_dir) {
+                self.error_message = Some(format!("Failed to create config dir: {}", e));
+            } else {
+                match serde_json::to_string_pretty(&merged_mults) {
+                    Ok(json) => {
+                        if let Err(e) =
+                            std::fs::write(config_dir.join("monster_field_mults.json"), json)
+                        {
+                            self.error_message = Some(format!(
+                                "Failed to write monster_field_mults.json: {}",
+                                e
+                            ));
+                        }
+                    }
+                    Err(e) => self.error_message = Some(e.to_string()),
+                }
+            }
         }
 
         // Write shop_additions.txt and craft_additions.txt (one "item" or "flag:item" per line).
@@ -1580,6 +1652,23 @@ impl ResalinatedApp {
                     self.error_message = Some(format!("Failed to parse monster preset: {}", e))
                 }
             }
+        }
+
+        // Load monster field multipliers (if the preset contains them), otherwise start empty.
+        if let Some(data) = self
+            .preset_manager
+            .get_preset_file(folder_name, "monster_field_mults.json")
+        {
+            match serde_json::from_slice(&data) {
+                Ok(map) => self.monster_field_mults = map,
+                Err(e) => {
+                    self.monster_field_mults.clear();
+                    self.error_message =
+                        Some(format!("Failed to load monster field multipliers: {}", e));
+                }
+            }
+        } else {
+            self.monster_field_mults.clear();
         }
 
         // Load metadata

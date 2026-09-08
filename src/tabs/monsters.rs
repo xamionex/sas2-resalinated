@@ -5,6 +5,7 @@ use eframe::egui;
 use egui::Ui;
 use sas2_parser::monster_catalog::{MonsterCatalog, MonsterDef, MonsterFieldValue};
 use sas2_parser::monster_names;
+use std::collections::HashMap;
 
 /// Return a monster name not already used in the catalog (appends _1, _2, ... on collision).
 fn next_unique_monster_name(catalog: &MonsterCatalog, base: &str) -> String {
@@ -309,6 +310,7 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
                         def,
                         vanilla_def.as_ref(),
                         hitbox_preview.as_ref(),
+                        &mut app.monster_field_mults,
                         &mut request_copy_picker,
                         &mut app.drops_clipboard,
                         &mut app.drops_copy_picker_open,
@@ -1238,6 +1240,7 @@ fn show_monsterdef_editor(
     def: &mut MonsterDef,
     vanilla: Option<&MonsterDef>,
     hitbox_preview: Option<&HitboxPreview>,
+    field_mults: &mut HashMap<String, HashMap<i32, f32>>,
     request_copy_picker: &mut bool,
     drops_clipboard: &mut Option<crate::magic_slot::DropsClipboard>,
     drops_copy_picker_open: &mut bool,
@@ -1674,22 +1677,79 @@ fn show_monsterdef_editor(
                                             egui::DragValue::new(v)
                                                 .speed(drag_speed),
                                         );
+                                        // Reset to vanilla, right after the value input.
+                                        if let Some(vanilla_def) = vanilla {
+                                            if let Some(vf) = vanilla_def
+                                                .fields
+                                                .iter()
+                                                .find(|vf| vf.id == field.id)
+                                            {
+                                                if monster_values_differ(&field.value, &vf.value)
+                                                    && ui.button("↺").clicked()
+                                                {
+                                                    field.value = vf.value.clone();
+                                                }
+                                            }
+                                        }
+                                        // Per-field multiplier (1.0 = vanilla), applied by the loader on top of the edited value.
+                                        let mults = field_mults
+                                            .entry(def.name.clone())
+                                            .or_default();
+                                        let mul = mults.entry(field.id).or_insert(1.0);
+                                        let mul_changed = (*mul - 1.0).abs() > 0.001;
+                                        ui.add(
+                                            egui::DragValue::new(mul)
+                                                .speed(0.01)
+                                                .range(0.0..=100.0)
+                                                .prefix("x")
+                                                .custom_formatter(|n, _| format!("{:.2}", n))
+                                                .custom_parser(|s| {
+                                                    s.trim_start_matches(['x', 'X'])
+                                                        .parse::<f64>()
+                                                        .ok()
+                                                }),
+                                        )
+                                        .on_hover_text(
+                                            "Multiplier vs the field value: 1.0 = unchanged, 0.5 = half, 2.0 = double. (0 is treated as unchanged, use a small value like 0.01 for near-zero.)",
+                                        );
+                                        // Reset the multiplier to 1.0, right after the multiplier input.
+                                        if mul_changed && ui.button("↺").clicked() {
+                                            *mul = 1.0;
+                                        }
+                                        if *mul == 1.0 {
+                                            mults.remove(&field.id);
+                                        }
                                     }
                                     MonsterFieldValue::Int(v) => {
                                         ui.add(egui::DragValue::new(v));
+                                        if let Some(vanilla_def) = vanilla {
+                                            if let Some(vf) = vanilla_def
+                                                .fields
+                                                .iter()
+                                                .find(|vf| vf.id == field.id)
+                                            {
+                                                if monster_values_differ(&field.value, &vf.value)
+                                                    && ui.button("↺").clicked()
+                                                {
+                                                    field.value = vf.value.clone();
+                                                }
+                                            }
+                                        }
                                     }
                                     MonsterFieldValue::String(v) => {
                                         ui.text_edit_singleline(v);
-                                    }
-                                }
-                                if let Some(vanilla_def) = vanilla {
-                                    if let Some(vf) =
-                                        vanilla_def.fields.iter().find(|vf| vf.id == field.id)
-                                    {
-                                        if monster_values_differ(&field.value, &vf.value)
-                                            && ui.button("↺").clicked()
-                                        {
-                                            field.value = vf.value.clone();
+                                        if let Some(vanilla_def) = vanilla {
+                                            if let Some(vf) = vanilla_def
+                                                .fields
+                                                .iter()
+                                                .find(|vf| vf.id == field.id)
+                                            {
+                                                if monster_values_differ(&field.value, &vf.value)
+                                                    && ui.button("↺").clicked()
+                                                {
+                                                    field.value = vf.value.clone();
+                                                }
+                                            }
                                         }
                                     }
                                 }
