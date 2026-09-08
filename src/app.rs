@@ -269,8 +269,7 @@ pub struct ResalinatedApp {
 }
 
 impl ResalinatedApp {
-    /// Construct the app with a pre-loaded config (used by main.rs so window
-    /// position/state can be applied before the window opens).
+    /// Construct the app with a pre-loaded config (used by main.rs so window position/state can be applied before the window opens).
     pub fn with_config(config: ResalinatedConfig) -> Self {
         let game_path = config.game_path.clone();
         let mut app = Self {
@@ -1209,55 +1208,66 @@ impl ResalinatedApp {
         }
 
         // Write charm_boosts.json (per-flag talisman boost magnitudes).
-        match self.merged_charm_boosts() {
-            Ok(merged) => {
-                if let Some(gp) = &self.game_path {
-                    let config_dir = gp.join("BepInEx/config/amione.SaS2Resalter");
-                    if let Err(e) = std::fs::create_dir_all(&config_dir) {
-                        self.error_message = Some(format!("Failed to create config dir: {}", e));
-                    } else {
-                        match serde_json::to_string_pretty(&merged) {
-                            Ok(json) => {
-                                if let Err(e) =
-                                    std::fs::write(config_dir.join("charm_boosts.json"), json)
-                                {
-                                    self.error_message =
-                                        Some(format!("Failed to write charm_boosts.json: {}", e));
-                                }
-                            }
-                            Err(e) => self.error_message = Some(e.to_string()),
+        // The in-memory edits (Talisman Boosts tab) are layered on top of the preset files so "Apply Now" reflects unsaved edits, matching how the other tabs behave.
+        let mut merged_charm = match self.merged_charm_boosts() {
+            Ok(m) => m,
+            Err(e) => {
+                self.error_message = Some(e);
+                HashMap::new()
+            }
+        };
+        for (flag, range) in &self.charm_boosts {
+            merged_charm.insert(*flag, range.clone());
+        }
+        if let Some(gp) = &self.game_path {
+            let config_dir = gp.join("BepInEx/config/amione.SaS2Resalter");
+            if let Err(e) = std::fs::create_dir_all(&config_dir) {
+                self.error_message = Some(format!("Failed to create config dir: {}", e));
+            } else {
+                match serde_json::to_string_pretty(&merged_charm) {
+                    Ok(json) => {
+                        if let Err(e) = std::fs::write(config_dir.join("charm_boosts.json"), json)
+                        {
+                            self.error_message =
+                                Some(format!("Failed to write charm_boosts.json: {}", e));
                         }
                     }
+                    Err(e) => self.error_message = Some(e.to_string()),
                 }
             }
-            Err(e) => self.error_message = Some(e),
         }
 
         // Write artifact_boosts.json (per-field artifact roll ranges).
-        match self.merged_artifact_boosts() {
-            Ok(merged) => {
-                if let Some(gp) = &self.game_path {
-                    let config_dir = gp.join("BepInEx/config/amione.SaS2Resalter");
-                    if let Err(e) = std::fs::create_dir_all(&config_dir) {
-                        self.error_message = Some(format!("Failed to create config dir: {}", e));
-                    } else {
-                        match serde_json::to_string_pretty(&merged) {
-                            Ok(json) => {
-                                if let Err(e) =
-                                    std::fs::write(config_dir.join("artifact_boosts.json"), json)
-                                {
-                                    self.error_message = Some(format!(
-                                        "Failed to write artifact_boosts.json: {}",
-                                        e
-                                    ));
-                                }
-                            }
-                            Err(e) => self.error_message = Some(e.to_string()),
+        // The in-memory edits (Artifacts tab) are layered on top of the preset files so "Apply Now" reflects unsaved edits, matching how the other tabs behave.
+        let mut merged_artifact = match self.merged_artifact_boosts() {
+            Ok(m) => m,
+            Err(e) => {
+                self.error_message = Some(e);
+                HashMap::new()
+            }
+        };
+        for (field, range) in &self.artifact_boosts {
+            merged_artifact.insert(*field, range.clone());
+        }
+        if let Some(gp) = &self.game_path {
+            let config_dir = gp.join("BepInEx/config/amione.SaS2Resalter");
+            if let Err(e) = std::fs::create_dir_all(&config_dir) {
+                self.error_message = Some(format!("Failed to create config dir: {}", e));
+            } else {
+                match serde_json::to_string_pretty(&merged_artifact) {
+                    Ok(json) => {
+                        if let Err(e) =
+                            std::fs::write(config_dir.join("artifact_boosts.json"), json)
+                        {
+                            self.error_message = Some(format!(
+                                "Failed to write artifact_boosts.json: {}",
+                                e
+                            ));
                         }
                     }
+                    Err(e) => self.error_message = Some(e.to_string()),
                 }
             }
-            Err(e) => self.error_message = Some(e),
         }
 
         // Write the merged dialog catalog (merchant shop scripts) as an override,
