@@ -9,6 +9,7 @@ mod config;
 mod image_editor;
 pub mod magic_slot;
 mod preset;
+mod projectile_icons;
 pub mod tabs;
 pub mod texture_editor;
 

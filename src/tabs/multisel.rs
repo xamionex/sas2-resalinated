@@ -411,6 +411,19 @@ pub fn paint_sel_outline(ui: &egui::Ui, rect: Rect, selected: bool) {
     }
 }
 
+/// Same as `paint_sel_outline` with an explicit colour, so a tile can show two states at once
+/// (e.g. enabled in the game plus selected in the UI).
+pub fn paint_outline_colored(ui: &egui::Ui, rect: Rect, color: Option<egui::Color32>) {
+    if let Some(color) = color {
+        ui.painter().rect_stroke(
+            rect,
+            2.0,
+            egui::Stroke::new(2.0_f32, color),
+            egui::StrokeKind::Inside,
+        );
+    }
+}
+
 /// Render a set of category checkboxes for the "Remove all by type" pickers.
 /// Up to 9 categories render as a vertical list, more than 9 render in a 3-column grid inside a bounded scroll area, so the window never grows past the screen and stays closable.
 pub fn category_checkboxes(ui: &mut Ui, cats: &[String], checked: &mut HashSet<String>) {
@@ -462,7 +475,7 @@ pub const MULTISEL_HELP: &str = "Multi-select:\n\
     \u{2022} Shift + Ctrl + hold and drag: add the boxed items to the selection\n\
     \u{2022} Hold left click and drag: move the view\n\
     \n\
-    Selected items are edited together in the sidebar.";
+    Selected items are edited together.";
 
 /// Draw a "Mouse usage help" button that opens a popup with the shared help text plus any tab-specific lines.
 /// Call it in the tab header row.

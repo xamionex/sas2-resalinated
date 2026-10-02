@@ -1,6 +1,6 @@
 use crate::atlas::{ItemAtlas, MonsterTextureCache};
 use crate::catalog::{
-    load_dialog_catalog, load_loot_catalog, load_monster_catalog, load_texture_catalog,
+    load_dialog_catalog, load_loc_strings, load_loot_catalog, load_monster_catalog, load_texture_catalog,
 };
 use crate::charm_boost::CharmBoostRange;
 use crate::config::{
@@ -11,8 +11,8 @@ use crate::config::{
 use crate::magic_slot::MagicSlotOverrides;
 use crate::preset::{PresetManager, PresetMeta, guid_folder_name};
 use crate::tabs::{
-    Tab, animations, artifacts, images, items, manager, monsters, preset_info, shop, talismans,
-    textures,
+    Tab, animations, artifacts, hazeburnt_spawns, images, items, manager, monsters, preset_info,
+    projectiles, shop, talismans, textures,
 };
 use eframe::egui;
 use rfd::FileDialog;
@@ -121,6 +121,16 @@ fn merge_dialog_edits(app: &ResalinatedApp) -> Result<sas2_parser::dialog::Dialo
     Ok(merged)
 }
 
+/// One entry of magic_pierce.json:
+/// a key string ("item:firebomb", "type:67") or a bare particle type number from configs written before item keys existed.
+fn pierce_key(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::String(s) if !s.is_empty() => Some(s.clone()),
+        serde_json::Value::Number(n) => n.as_i64().map(|id| format!("type:{}", id)),
+        _ => None,
+    }
+}
+
 pub struct ResalinatedApp {
     pub config: ResalinatedConfig,
     pub vanilla_data: Option<Vec<u8>>,
@@ -141,6 +151,33 @@ pub struct ResalinatedApp {
     /// Artifact boost ranges: artifact field id -> {min, max, static, static_boost}.
     /// Written to artifact_boosts.json on apply; read by the loader's ArtifactBoostsPatch.
     pub artifact_boosts: HashMap<i32, crate::artifact_boost::ArtifactBoostRange>,
+    /// Magic projectile particle types that pierce, split by the side that fired them.
+    /// Saved per preset as magic_pierce.json (same flow as the magic damage overrides) and merged on apply; read by the loader's MagicPiercePatch.
+    /// Pierce keys for the player side: "item:<loot name>" per rune/ranged weapon/throwable.
+    pub pierce_player: HashSet<String>,
+    /// Pierce keys for the enemy side: "type:<particle id>" per projectile particle type.
+    pub pierce_enemy: HashSet<String>,
+    /// Search filter of the Projectiles tab's item lists.
+    pub pierce_item_search: String,
+    /// Hazeburnt spawn pools: area number (1..8) -> monster def names.
+    /// Written to hazeburnt_spawns.json on apply; read by the loader's HazeburntSpawnPatch.
+    pub hazeburnt_spawns: HashMap<i32, HashSet<String>>,
+    /// Set once the tab has seeded the pools from the vanilla monster catalog.
+    pub hazeburnt_spawns_initialized: bool,
+    pub hazeburnt_selected_area: i32,
+    pub hazeburnt_search: String,
+    /// How the Hazeburnt Spawns grid groups its monsters.
+    pub hazeburnt_group_by: crate::tabs::hazeburnt_spawns::GroupBy,
+    /// Right-button gesture state and multi-selection of the Hazeburnt Spawns grid.
+    pub hazeburnt_grid_sel: crate::tabs::multisel::GridSel<usize>,
+    pub hazeburnt_selected_multi: HashSet<usize>,
+    pub hazeburnt_selected_single: Option<usize>,
+    /// Right-button gesture state and multi-selection of the Projectiles tab grids.
+    pub projectile_grid_sel: crate::tabs::multisel::GridSel<usize>,
+    pub projectile_selected_multi: HashSet<usize>,
+    pub projectile_selected_single: Option<usize>,
+    /// Search filter of the Projectiles tab's enemy list.
+    pub pierce_enemy_search: String,
     // Items tab
     pub selected_item_idx: Option<usize>,
     /// Multi-selected item indices (right-click toggles).
@@ -194,6 +231,10 @@ pub struct ResalinatedApp {
     /// Applied by the loader when the game reads the field; 1.0 = unchanged.
     pub monster_field_mults: HashMap<String, HashMap<i32, f32>>,
     pub item_atlas: Option<ItemAtlas>,
+    /// Compiled loc strings from Dialog/data/strings.ztx (English), used for area names.
+    pub loc_strings: Vec<String>,
+    /// Icons for the Projectiles tab, built from the game's particle and loot sheets.
+    pub projectile_icons: Option<crate::projectile_icons::ProjectileIcons>,
     pub monster_texture_cache: MonsterTextureCache,
     pub settings_open: bool,
     pub catalog_error: Option<String>,
@@ -288,6 +329,21 @@ impl ResalinatedApp {
             active_tab: Tab::Manager,
             charm_boosts: HashMap::new(),
             artifact_boosts: HashMap::new(),
+            pierce_player: HashSet::new(),
+            pierce_enemy: HashSet::new(),
+            pierce_item_search: String::new(),
+            hazeburnt_spawns: HashMap::new(),
+            hazeburnt_spawns_initialized: false,
+            hazeburnt_selected_area: 1,
+            hazeburnt_search: String::new(),
+            hazeburnt_group_by: crate::tabs::hazeburnt_spawns::GroupBy::Role,
+            hazeburnt_grid_sel: crate::tabs::multisel::GridSel::default(),
+            hazeburnt_selected_multi: HashSet::new(),
+            hazeburnt_selected_single: None,
+            projectile_grid_sel: crate::tabs::multisel::GridSel::default(),
+            projectile_selected_multi: HashSet::new(),
+            projectile_selected_single: None,
+            pierce_enemy_search: String::new(),
             selected_item_idx: None,
             selected_item_idxs: HashSet::new(),
             items_grid_sel: crate::tabs::multisel::GridSel::default(),
@@ -327,6 +383,8 @@ impl ResalinatedApp {
             show_only_changed_monsters: false,
             monster_field_mults: HashMap::new(),
             item_atlas: None,
+            loc_strings: Vec::new(),
+            projectile_icons: None,
             monster_texture_cache: MonsterTextureCache::new(),
             settings_open: false,
             catalog_error: None,
@@ -382,6 +440,19 @@ impl ResalinatedApp {
         if let Some(game_path) = &app.config.game_path.clone() {
             app.load_catalogs(game_path);
         }
+
+        // Temporary profiling hook: start on a specific tab (SAS2_START_TAB=Items).
+        if let Ok(name) = std::env::var("SAS2_START_TAB") {
+            app.active_tab = match name.as_str() {
+                "Items" => Tab::Items,
+                "Monsters" => Tab::Monsters,
+                "Projectiles" => Tab::Projectiles,
+                "HazeburntSpawns" => Tab::HazeburntSpawns,
+                "Animations" => Tab::Animations,
+                "Manager" => Tab::Manager,
+                _ => app.active_tab,
+            };
+        }
         app
     }
 }
@@ -396,6 +467,9 @@ impl ResalinatedApp {
     /// Load (or reload) all three catalogs from `game_path`.
     fn load_catalogs(&mut self, game_path: &Path) {
         self.preset_manager.set_game_path(&game_path);
+
+        // Re-seed the hazeburnt tab from the new vanilla catalog on next open.
+        self.hazeburnt_spawns_initialized = false;
 
         match load_loot_catalog(game_path) {
             Ok(cat) => {
@@ -449,6 +523,16 @@ impl ResalinatedApp {
                 self.catalog_error = Some(e);
             }
         }
+
+        // Area and other UI names. Missing strings.ztx only costs the area names.
+        match load_loc_strings(game_path) {
+            Ok(strings) => self.loc_strings = strings,
+            Err(e) => {
+                eprintln!("{}", e);
+                self.loc_strings.clear();
+            }
+        }
+        self.projectile_icons = None;
         self.load_merchant_locations(game_path);
     }
 
@@ -819,9 +903,158 @@ impl ResalinatedApp {
         Ok(merged)
     }
 
+    /// Seed the hazeburnt spawn pools from the vanilla assignment the first time the tab is shown (or after a preset without a spawn config was loaded).
+    pub fn init_hazeburnt_spawns(&mut self) {
+        self.hazeburnt_spawns_initialized = true;
+        if !self.hazeburnt_spawns.is_empty() {
+            return;
+        }
+        let Some(cat) = &self.working_monster_catalog else {
+            return;
+        };
+        for (area, names) in crate::tabs::hazeburnt_spawns::vanilla_areas(cat) {
+            self.hazeburnt_spawns
+                .entry(area)
+                .or_default()
+                .extend(names);
+        }
+    }
+
+    /// Cross-preset merge of the pierce selection:
+    /// every enabled preset contributes its types (union, pierce is additive), then the working selection of the preset being edited replaces its own entry so unchecking something actually takes effect on Apply.
+    fn merged_pierce(&self) -> (HashSet<String>, HashSet<String>) {
+        let mut player: HashSet<String> = HashSet::new();
+        let mut enemy: HashSet<String> = HashSet::new();
+        for folder_name in self.preset_manager.enabled_presets() {
+            if folder_name == "Vanilla (Base)" || folder_name == &self.edit_folder_name {
+                continue;
+            }
+            if let Some(data) = self
+                .preset_manager
+                .get_preset_file(folder_name, "magic_pierce.json")
+            {
+                match serde_json::from_slice::<HashMap<String, Vec<serde_json::Value>>>(&data) {
+                    Ok(map) => {
+                        if let Some(entries) = map.get("player") {
+                            player.extend(entries.iter().filter_map(pierce_key));
+                        }
+                        if let Some(entries) = map.get("enemy") {
+                            enemy.extend(entries.iter().filter_map(pierce_key));
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "Invalid magic_pierce.json in '{}': {}",
+                            folder_name, e
+                        );
+                    }
+                }
+            }
+        }
+        player.extend(self.pierce_player.iter().cloned());
+        enemy.extend(self.pierce_enemy.iter().cloned());
+        (player, enemy)
+    }
+
+    /// Serialize the pierce selection into the loader's magic_pierce.json format.
+    fn pierce_json(player: &HashSet<String>, enemy: &HashSet<String>) -> Result<String, String> {
+        let mut player: Vec<String> = player.iter().cloned().collect();
+        let mut enemy: Vec<String> = enemy.iter().cloned().collect();
+        player.sort_unstable();
+        enemy.sort_unstable();
+        let mut map = serde_json::Map::new();
+        map.insert("player".to_string(), serde_json::json!(player));
+        map.insert("enemy".to_string(), serde_json::json!(enemy));
+        serde_json::to_string_pretty(&serde_json::Value::Object(map))
+            .map_err(|e| format!("Serialization error: {}", e))
+    }
+
+    /// Cross-preset merge of the hazeburnt spawn pools:
+    /// later presets override the areas they define, then the working pools (all 8 areas) replace the merged ones so unsaved edits are reflected on Apply.
+    /// When no working pools exist but some preset defines areas, the areas it leaves out keep their vanilla pools instead of being emptied.
+    fn merged_hazeburnt_spawns(&self) -> std::collections::BTreeMap<i32, Vec<String>> {
+        use crate::tabs::hazeburnt_spawns::AREA_COUNT;
+        let mut merged: HashMap<i32, HashSet<String>> = HashMap::new();
+        for folder_name in self.preset_manager.enabled_presets() {
+            if folder_name == "Vanilla (Base)" || folder_name == &self.edit_folder_name {
+                continue;
+            }
+            if let Some(data) = self
+                .preset_manager
+                .get_preset_file(folder_name, "hazeburnt_spawns.json")
+            {
+                match serde_json::from_slice::<HashMap<String, Vec<String>>>(&data) {
+                    Ok(map) => {
+                        for (area, names) in map {
+                            if let Ok(area) = area.parse::<i32>() {
+                                merged.insert(area, names.into_iter().collect());
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "Invalid hazeburnt_spawns.json in '{}': {}",
+                            folder_name, e
+                        );
+                    }
+                }
+            }
+        }
+
+        if !self.hazeburnt_spawns.is_empty() {
+            for area in 1..=AREA_COUNT {
+                let names = self
+                    .hazeburnt_spawns
+                    .get(&area)
+                    .cloned()
+                    .unwrap_or_default();
+                merged.insert(area, names);
+            }
+        } else if !merged.is_empty() {
+            if let Some(cat) = &self.working_monster_catalog {
+                for (area, names) in crate::tabs::hazeburnt_spawns::vanilla_areas(cat) {
+                    merged.entry(area).or_insert_with(|| names.into_iter().collect());
+                }
+            }
+        }
+
+        Self::pools_to_map(&merged)
+    }
+
+    /// Flatten area -> names into a sorted map covering every area (missing areas become empty).
+    fn pools_to_map(
+        pools: &HashMap<i32, HashSet<String>>,
+    ) -> std::collections::BTreeMap<i32, Vec<String>> {
+        use crate::tabs::hazeburnt_spawns::AREA_COUNT;
+        let mut out: std::collections::BTreeMap<i32, Vec<String>> =
+            std::collections::BTreeMap::new();
+        for area in 1..=AREA_COUNT {
+            let mut names: Vec<String> = pools
+                .get(&area)
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .collect();
+            names.sort();
+            out.insert(area, names);
+        }
+        out
+    }
+
+    /// Serialize the hazeburnt spawn pools into the loader's hazeburnt_spawns.json format.
+    fn hazeburnt_spawns_json(
+        pools: &std::collections::BTreeMap<i32, Vec<String>>,
+    ) -> Result<String, String> {
+        let mut map = serde_json::Map::new();
+        for (area, names) in pools {
+            map.insert(area.to_string(), serde_json::json!(names));
+        }
+        serde_json::to_string_pretty(&serde_json::Value::Object(map))
+            .map_err(|e| format!("Serialization error: {}", e))
+    }
+
     /// Merge magic overrides from all enabled presets (later ones override earlier ones).
-    fn merged_magic_overrides(
-        &self,
+    fn merged_magic_overrides(        &self,
     ) -> Result<HashMap<String, HashMap<i32, MagicSlotOverrides>>, String> {
         let mut merged: HashMap<String, HashMap<i32, MagicSlotOverrides>> = HashMap::new();
         for folder_name in self.preset_manager.enabled_presets() {
@@ -1082,6 +1315,21 @@ impl ResalinatedApp {
         self.preset_manager
             .save_preset_file(folder_name, "craft_additions.json", &craft_bytes)?;
 
+        // Magic projectile pierce selection (player/enemy particle types).
+        let pierce_json = Self::pierce_json(&self.pierce_player, &self.pierce_enemy)
+            .map_err(|e| format!("Failed to serialize magic pierce: {}", e))?;
+        self.preset_manager
+            .save_preset_file(folder_name, "magic_pierce.json", pierce_json.as_bytes())?;
+
+        // Hazeburnt spawn pools (only saved when the tab was used, so presets that never touch the system leave the game's own pools alone).
+        if !self.hazeburnt_spawns.is_empty() {
+            let pools = Self::pools_to_map(&self.hazeburnt_spawns);
+            let json = Self::hazeburnt_spawns_json(&pools)
+                .map_err(|e| format!("Failed to serialize hazeburnt spawns: {}", e))?;
+            self.preset_manager
+                .save_preset_file(folder_name, "hazeburnt_spawns.json", json.as_bytes())?;
+        }
+
         // Snapshot the working assets (textures, master.zcm, char defs, icons) into the preset.
         self.save_assets_to_preset(folder_name)?;
 
@@ -1338,6 +1586,57 @@ impl ResalinatedApp {
                         }
                     }
                     Err(e) => self.error_message = Some(e.to_string()),
+                }
+            }
+        }
+
+        // Write magic_pierce.json (per-item player projectiles and per-type enemy projectiles that pass through enemies). Same preset sidecar and merge flow as magic_overrides.json.
+        let (pierce_player, pierce_enemy) = self.merged_pierce();
+        if let Some(gp) = &self.game_path {
+            let config_dir = gp.join("BepInEx/config/amione.SaS2Resalter");
+            if let Err(e) = std::fs::create_dir_all(&config_dir) {
+                self.error_message = Some(format!("Failed to create config dir: {}", e));
+            } else {
+                match Self::pierce_json(&pierce_player, &pierce_enemy) {
+                    Ok(json) => {
+                        if let Err(e) = std::fs::write(config_dir.join("magic_pierce.json"), json) {
+                            self.error_message =
+                                Some(format!("Failed to write magic_pierce.json: {}", e));
+                        }
+                    }
+                    Err(e) => self.error_message = Some(e),
+                }
+            }
+        }
+
+        // Write hazeburnt_spawns.json (per-area hazeburnt spawn pools).
+        // Always written so a config from an earlier apply cannot linger:
+        // an empty object means "no preset configures this", which the loader treats as the vanilla pools.
+        {
+            let merged = self.merged_hazeburnt_spawns();
+            let json = if merged.is_empty() {
+                Ok("{}".to_string())
+            } else {
+                Self::hazeburnt_spawns_json(&merged)
+            };
+            if let Some(gp) = &self.game_path {
+                let config_dir = gp.join("BepInEx/config/amione.SaS2Resalter");
+                if let Err(e) = std::fs::create_dir_all(&config_dir) {
+                    self.error_message = Some(format!("Failed to create config dir: {}", e));
+                } else {
+                    match json {
+                        Ok(json) => {
+                            if let Err(e) =
+                                std::fs::write(config_dir.join("hazeburnt_spawns.json"), json)
+                            {
+                                self.error_message = Some(format!(
+                                    "Failed to write hazeburnt_spawns.json: {}",
+                                    e
+                                ));
+                            }
+                        }
+                        Err(e) => self.error_message = Some(e),
+                    }
                 }
             }
         }
@@ -1671,6 +1970,50 @@ impl ResalinatedApp {
             self.monster_field_mults.clear();
         }
 
+        // Load magic projectile pierce selection (if the preset contains it), otherwise start empty.
+        self.pierce_player.clear();
+        self.pierce_enemy.clear();
+        if let Some(data) = self
+            .preset_manager
+            .get_preset_file(folder_name, "magic_pierce.json")
+        {
+            match serde_json::from_slice::<HashMap<String, Vec<serde_json::Value>>>(&data) {
+                Ok(map) => {
+                    if let Some(entries) = map.get("player") {
+                        self.pierce_player = entries.iter().filter_map(pierce_key).collect();
+                    }
+                    if let Some(entries) = map.get("enemy") {
+                        self.pierce_enemy = entries.iter().filter_map(pierce_key).collect();
+                    }
+                }
+                Err(e) => {
+                    self.error_message = Some(format!("Failed to load magic pierce: {}", e));
+                }
+            }
+        }
+
+        // Load hazeburnt spawn pools (if the preset contains them), otherwise re-seed from vanilla the next time the tab is opened.
+        self.hazeburnt_spawns.clear();
+        self.hazeburnt_spawns_initialized = false;
+        if let Some(data) = self
+            .preset_manager
+            .get_preset_file(folder_name, "hazeburnt_spawns.json")
+        {
+            match serde_json::from_slice::<HashMap<String, Vec<String>>>(&data) {
+                Ok(map) => {
+                    for (area, names) in map {
+                        if let Ok(area) = area.parse::<i32>() {
+                            self.hazeburnt_spawns
+                                .insert(area, names.into_iter().collect());
+                        }
+                    }
+                }
+                Err(e) => {
+                    self.error_message = Some(format!("Failed to load hazeburnt spawns: {}", e));
+                }
+            }
+        }
+
         // Load metadata
         if let Some(p) = self
             .preset_manager
@@ -1928,12 +2271,25 @@ impl ResalinatedApp {
 
 impl eframe::App for ResalinatedApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // Opt-in diagnostics: set SAS2_FRAME_LOG=1 to stderr-log slow UI frames (per tab).
+        let frame_log = std::env::var_os("SAS2_FRAME_LOG").is_some();
+        let frame_log_all = matches!(std::env::var("SAS2_FRAME_LOG").as_deref(), Ok("all"));
+        let frame_start = std::time::Instant::now();
+
         if self.item_atlas.is_none() {
             if let Some(game_path) = self.config.game_path.clone() {
                 match ItemAtlas::load(&game_path, ui.ctx()) {
                     Ok(atlas) => self.item_atlas = Some(atlas),
                     Err(e) => eprintln!("Failed to load item atlas: {}", e),
                 }
+            }
+        }
+
+        if self.projectile_icons.is_none() {
+            if let Some(game_path) = self.config.game_path.clone() {
+                self.projectile_icons = Some(crate::projectile_icons::ProjectileIcons::new(
+                    &game_path,
+                ));
             }
         }
 
@@ -1994,6 +2350,8 @@ impl eframe::App for ResalinatedApp {
                 ui.selectable_value(&mut self.active_tab, Tab::Shop, egui::RichText::new("Shop").size(tabs));
                 ui.selectable_value(&mut self.active_tab, Tab::Talismans, egui::RichText::new("Talisman Boosts").size(tabs));
                 ui.selectable_value(&mut self.active_tab, Tab::Artifacts, egui::RichText::new("Artifact Boosts").size(tabs));
+                ui.selectable_value(&mut self.active_tab, Tab::Projectiles, egui::RichText::new("Projectiles").size(tabs));
+                ui.selectable_value(&mut self.active_tab, Tab::HazeburntSpawns, egui::RichText::new("Hazeburnt Spawns").size(tabs));
 
                 ui.vertical(|ui| {
                     // progress bar while textures are loading
@@ -2019,8 +2377,18 @@ impl eframe::App for ResalinatedApp {
                 Tab::Shop => shop::show(self, ui),
                 Tab::Talismans => talismans::show(self, ui),
                 Tab::Artifacts => artifacts::show(self, ui),
+                Tab::Projectiles => projectiles::show(self, ui),
+                Tab::HazeburntSpawns => hazeburnt_spawns::show(self, ui),
             }
         });
+
+        if frame_log {
+            let ms = frame_start.elapsed().as_secs_f64() * 1000.0;
+            if frame_log_all || ms > 8.0 {
+                let dt_ms = ui.input(|i| i.stable_dt) * 1000.0;
+                eprintln!("[frame] ui {:>7.2}ms dt {:>7.2}ms {}", ms, dt_ms, self.active_tab.name());
+            }
+        }
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {

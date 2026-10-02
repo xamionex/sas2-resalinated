@@ -125,22 +125,6 @@ fn clone_selected_monster(app: &mut ResalinatedApp) {
     }
 }
 
-fn add_monster_label(ui: &mut Ui, title: &str, font_size: f32, selected: bool) {
-    let color = if selected {
-        egui::Color32::LIGHT_GREEN
-    } else {
-        ui.visuals().text_color()
-    };
-    for word in title.split_whitespace() {
-        ui.add(
-            egui::Label::new(egui::RichText::new(word).size(font_size).color(color))
-                .wrap_mode(egui::TextWrapMode::Truncate)
-                .halign(egui::Align::Center)
-                .show_tooltip_when_elided(false),
-        );
-    }
-}
-
 pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
     if app.working_monster_catalog.is_none() {
         ui.label("No monster catalog loaded.");
@@ -913,13 +897,15 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
             .show_viewport(ui, |ui, viewport| {
                 // Only monsters whose x-range intersects the visible viewport are laid out each frame.
                 // Culled monsters still advance the grid cursor via allocate_space with the exact cell size, so positions, row heights and the scrollbar stay exact while the widget count stays proportional to the viewport.
-                let icon_size = app.config.item_icon_size;
-                let font_size = app.config.grid_font_size;
-                let label_h = ui.fonts_mut(|f| f.row_height(&egui::FontId::proportional(font_size)));
-                let spacing_y = ui.spacing().item_spacing.y;
-                let pad_x = 2.0 * ui.spacing().button_padding.x;
-                let pad_y = 2.0 * ui.spacing().button_padding.y;
-                let overscan = 3.0 * (icon_size + pad_x);
+                let metrics = crate::tabs::monster_grid::GridMetrics::new(
+                    ui,
+                    app.config.item_icon_size,
+                    app.config.grid_font_size,
+                    app.config.category_font_size,
+                    8.0,
+                    8.0,
+                );
+                let overscan = 3.0 * (metrics.icon_size + metrics.pad_x);
                 let vp_min = viewport.min.x - overscan;
                 let vp_max = viewport.max.x + overscan;
 
@@ -929,81 +915,68 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
                     ui.label(
                         egui::RichText::new(&cat)
                             .strong()
-                            .size(app.config.category_font_size),
+                            .size(metrics.category_font_size),
                     );
 
-                    egui::Grid::new(&cat).spacing([8.0, 8.0]).show(ui, |ui| {
-                        let mut x = 0.0f32;
-                        for (orig_idx, def) in entries {
-                            let has_icon = !def.texture.is_empty();
-                            let display_name = def
-                                .titles
-                                .first()
-                                .filter(|t| !t.is_empty())
-                                .cloned()
-                                .unwrap_or_else(|| def.name.clone());
-                            let word_count = display_name.split_whitespace().count();
-                            // Image buttons are icon_size + button frame margins wide; placeholders are icon_size.
-                            let item_w = if has_icon { icon_size + pad_x } else { icon_size };
-                            let item_h = if has_icon { icon_size + pad_y } else { icon_size }
-                                + word_count as f32 * (label_h + spacing_y);
-                            let start = x;
-                            let end = x + item_w;
-                            x = end + 8.0;
-                            if end < vp_min || start > vp_max {
-                                ui.allocate_space(egui::vec2(item_w, item_h));
-                                continue;
-                            }
-
-                            ui.vertical(|ui| {
-                                let tex = if def.texture.is_empty() {
-                                    None
-                                } else {
-                                    app.monster_texture_cache.get_or_assemble(
-                                        ui.ctx(),
-                                        &def.def,
-                                        &def.texture,
-                                    )
-                                };
-                                let response = if let Some(tex) = &tex {
-                                    ui.add(egui::Button::image(
-                                        egui::Image::from_texture(&tex.clone()).fit_to_exact_size(
-                                            egui::vec2(icon_size, icon_size),
-                                        ),
-                                    ))
-                                } else {
-                                    // placeholder while loading
-                                    ui.allocate_response(
-                                        egui::vec2(icon_size, icon_size),
-                                        egui::Sense::click(),
-                                    )
-                                };
-                                let btn_w = response.rect.width();
-                                gsel.cell(response.rect, *orig_idx);
-                                let is_sel = app.selected_monster_idx == Some(*orig_idx)
-                                    || app.selected_monster_idxs.contains(orig_idx)
-                                    || gsel.is_box_hit(orig_idx);
-                                crate::tabs::multisel::paint_sel_outline(
-                                    ui,
-                                    response.rect,
-                                    is_sel,
-                                );
-                                ui.set_max_width(btn_w);
-                                add_monster_label(
-                                    ui,
+                    egui::Grid::new(&cat)
+                        .spacing([metrics.spacing_x, metrics.spacing_y])
+                        .show(ui, |ui| {
+                            let mut x = 0.0f32;
+                            for (orig_idx, def) in entries {
+                                let has_icon = !def.texture.is_empty();
+                                let display_name = def
+                                    .titles
+                                    .first()
+                                    .filter(|t| !t.is_empty())
+                                    .cloned()
+                                    .unwrap_or_else(|| def.name.clone());
+                                let is_disabled = app.monster_disabled.contains(&def.name);
+                                let item_size = metrics.tile_size(
                                     &display_name,
-                                    font_size,
-                                    is_sel,
+                                    has_icon,
+                                    if is_disabled { 1 } else { 0 },
                                 );
-                                if app.monster_disabled.contains(&def.name) {
-                                    ui.label(
-                                        egui::RichText::new("(disabled)")
-                                            .color(egui::Color32::from_rgb(220, 120, 120)),
-                                    );
+                                let start = x;
+                                let end = x + item_size.x;
+                                x = end + metrics.spacing_x;
+                                if end < vp_min || start > vp_max {
+                                    ui.allocate_space(item_size);
+                                    continue;
                                 }
-                            });
-                        }
-                    });
+
+                                ui.vertical(|ui| {
+                                    let tex = if def.texture.is_empty() {
+                                        None
+                                    } else {
+                                        app.monster_texture_cache.get_or_assemble(
+                                            ui.ctx(),
+                                            &def.def,
+                                            &def.texture,
+                                        )
+                                    };
+                                    let is_sel = app.selected_monster_idx == Some(*orig_idx)
+                                        || app.selected_monster_idxs.contains(orig_idx)
+                                        || gsel.is_box_hit(orig_idx);
+                                    let note = is_disabled.then(|| {
+                                        ("(disabled)", egui::Color32::from_rgb(220, 120, 120))
+                                    });
+                                    let response = crate::tabs::monster_grid::monster_tile(
+                                        ui,
+                                        tex.as_ref(),
+                                        &display_name,
+                                        &metrics,
+                                        is_sel,
+                                        note,
+                                    );
+                                    gsel.cell(response.rect, *orig_idx);
+                                    crate::tabs::multisel::paint_sel_outline(
+                                        ui,
+                                        response.rect,
+                                        is_sel,
+                                    );
+                                });
+                            }
+                        });
 
                     ui.add_space(8.0);
                 }

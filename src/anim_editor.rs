@@ -1,7 +1,7 @@
 use crate::atlas::{PartRenderInfo, assemble_frame_with_parts};
 use egui::TextureHandle;
 use image::RgbaImage;
-use sas2_parser::char_def::{Animation, CharDef, KeyFrame};
+use sas2_parser::char_def::{Animation, CharDef, KeyFrame, Part};
 use sas2_parser::subflags::SubFlagDefCatalog;
 use sas2_parser::xnb_loader::load_texture_from_path;
 use sas2_parser::xtexture::XTextureMeta;
@@ -254,6 +254,42 @@ impl AnimEditor {
             t -= d;
         }
         self.selected_kf = Some(idx);
+    }
+
+    /// Vanilla copy of one part of one frame, for the per-field resets and "Revert part".
+    /// Frames are matched by index, which is how the vanilla file numbers them.
+    pub fn vanilla_part_clone(&self, frame_idx: usize, part_idx: usize) -> Option<Part> {
+        self.vanilla_char
+            .as_ref()?
+            .frames
+            .get(frame_idx)?
+            .parts
+            .get(part_idx)
+            .cloned()
+    }
+
+    /// Restore the whole part at `frame_idx`/`part_idx` from the vanilla file.
+    pub fn revert_frame_part(
+        &mut self,
+        frame_idx: usize,
+        part_idx: usize,
+    ) -> Result<(), String> {
+        let vanilla = self
+            .vanilla_part_clone(frame_idx, part_idx)
+            .ok_or("This part has no vanilla version to revert to")?;
+        let cd = self.char_def.as_mut().ok_or("No character loaded")?;
+        let frame = cd
+            .frames
+            .get_mut(frame_idx)
+            .ok_or("This frame does not exist")?;
+        let part = frame
+            .parts
+            .get_mut(part_idx)
+            .ok_or("This part does not exist")?;
+        *part = vanilla;
+        self.dirty = true;
+        self.invalidate_preview();
+        Ok(())
     }
 
     /// True when the animation at `anim_idx` exists in the vanilla char def (can be reset).

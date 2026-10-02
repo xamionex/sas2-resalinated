@@ -77,6 +77,64 @@ pub fn load_monster_catalog(game_path: &Path) -> Result<MonsterCatalog, String> 
     MonsterCatalog::load_from_bytes(&data).map_err(|e| e.to_string())
 }
 
+/// Loc strings from Dialog/data/strings.ztx, indexed like LocStrings.GetLocStr.
+/// Only the English series (index 0) is read; the tab uses it for area names.
+pub fn load_loc_strings(game_path: &Path) -> Result<Vec<String>, String> {
+    let path = game_path.join("Dialog").join("data").join("strings.ztx");
+    if !path.exists() {
+        return Err(format!("strings.ztx not found in: {}", path.display()));
+    }
+    let data = fs::read(&path).map_err(|e| e.to_string())?;
+    let mut pos: usize;
+
+    // BinaryReader.ReadString: 7-bit encoded byte length, then UTF-8 bytes.
+    fn read_string(data: &[u8], pos: &mut usize) -> Result<String, String> {
+        let mut len = 0usize;
+        let mut shift = 0u32;
+        loop {
+            if *pos >= data.len() || shift > 28 {
+                return Err("truncated string length".to_string());
+            }
+            let b = data[*pos];
+            *pos += 1;
+            len |= ((b & 0x7f) as usize) << shift;
+            if b & 0x80 == 0 {
+                break;
+            }
+            shift += 7;
+        }
+        let end = *pos + len;
+        if end > data.len() {
+            return Err("truncated string body".to_string());
+        }
+        let s = String::from_utf8_lossy(&data[*pos..end]).into_owned();
+        *pos = end;
+        Ok(s)
+    }
+
+    if data.len() < 4 {
+        return Err("strings.ztx is too small".to_string());
+    }
+    let count = i32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+    if count < 0 || count > 1_000_000 {
+        return Err(format!("implausible loc string count {}", count));
+    }
+    pos = 4;
+
+    let mut out = Vec::with_capacity(count as usize);
+    for _ in 0..count {
+        let _orig = read_string(&data, &mut pos)?;
+        // 13 language series, English first.
+        let english = read_string(&data, &mut pos)?;
+        for _ in 1..13 {
+            let _ = read_string(&data, &mut pos)?;
+        }
+        let _notes = read_string(&data, &mut pos)?;
+        out.push(english);
+    }
+    Ok(out)
+}
+
 // TODO: implement skill tree modification
 #[allow(dead_code)]
 pub fn load_skilltree_catalog(game_path: &Path) -> Result<SkillTreeCatalog, String> {

@@ -81,6 +81,18 @@ pub struct ResalinatedConfig {
     /// Last window maximized state.
     #[serde(default)]
     pub window_maximized: bool,
+
+    /// Projectiles tab: clicking a tile toggles pierce instead of only selecting it.
+    #[serde(default)]
+    pub projectile_toggle_on_click: bool,
+
+    /// Hazeburnt Spawns tab: clicking a monster toggles it in the pool instead of only selecting it.
+    #[serde(default)]
+    pub hazeburnt_toggle_on_click: bool,
+
+    /// Hazeburnt Spawns tab: list every regular enemy, not only the hazeburnt variants.
+    #[serde(default)]
+    pub hazeburnt_show_all_monsters: bool,
 }
 
 pub fn default_true() -> bool {
@@ -110,6 +122,9 @@ impl Default for ResalinatedConfig {
             window_pos: None,
             window_size: None,
             window_maximized: false,
+            projectile_toggle_on_click: false,
+            hazeburnt_toggle_on_click: false,
+            hazeburnt_show_all_monsters: false,
         }
     }
 }

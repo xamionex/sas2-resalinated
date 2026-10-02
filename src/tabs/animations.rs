@@ -369,19 +369,38 @@ fn show_part_editor(app: &mut ResalinatedApp, ui: &mut Ui) {
     let mut invalidate = false;
     let mut remove_part = false;
     let mut add_part = false;
+    let mut revert_part = false;
+
+    // Vanilla copy of the selected part, for the resets (cloned so the editor can be borrowed mutably below).
+    let vanilla_part = app
+        .anim_editor
+        .selected_part
+        .and_then(|pi| app.anim_editor.vanilla_part_clone(frame_idx, pi));
 
     if let Some(cd) = app.anim_editor.char_def.as_mut() {
         if let Some(frame) = cd.frames.get_mut(frame_idx) {
             if let Some(pi) = app.anim_editor.selected_part {
                 if let Some(part) = frame.parts.get_mut(pi) {
-                    if part_fields(ui, part) {
+                    if part_fields(ui, part, vanilla_part.as_ref()) {
                         dirty = true;
                         invalidate = true;
                     }
                     ui.add_space(4.0);
-                    if ui.button("Remove part").clicked() {
-                        remove_part = true;
-                    }
+                    ui.horizontal(|ui| {
+                        if ui.button("Remove part").clicked() {
+                            remove_part = true;
+                        }
+                        let can_revert = vanilla_part.is_some();
+                        if ui
+                            .add_enabled(can_revert, egui::Button::new("Revert part"))
+                            .on_hover_text(
+                                "Restore every field of this part from the vanilla file",
+                            )
+                            .clicked()
+                        {
+                            revert_part = true;
+                        }
+                    });
                 }
             } else {
                 ui.label("Select a part above.");
@@ -399,6 +418,16 @@ fn show_part_editor(app: &mut ResalinatedApp, ui: &mut Ui) {
                         app.anim_editor.selected_part = None;
                         dirty = true;
                         invalidate = true;
+                    }
+                }
+            } else if revert_part {
+                if let Some(pi) = app.anim_editor.selected_part {
+                    if let Some(v) = vanilla_part.clone() {
+                        if pi < frame.parts.len() {
+                            frame.parts[pi] = v;
+                            dirty = true;
+                            invalidate = true;
+                        }
                     }
                 }
             } else if add_part {
@@ -425,68 +454,162 @@ fn show_part_editor(app: &mut ResalinatedApp, ui: &mut Ui) {
     }
 }
 
-/// Numeric editors for one part. Returns true if any value changed.
-fn part_fields(ui: &mut Ui, part: &mut Part) -> bool {
+/// One editable part field, used by the per-field reset buttons.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PartField {
+    Idx,
+    LocX,
+    LocY,
+    Rotation,
+    ScaleX,
+    ScaleY,
+    Flip,
+    Parent,
+    ParentOffX,
+    ParentOffY,
+    ParentRotOff,
+}
+
+/// Value of one field, for the "differs from vanilla" check.
+fn field_matches(part: &Part, vanilla: Option<&Part>, field: PartField) -> bool {
+    let Some(v) = vanilla else {
+        return true; // nothing to reset to
+    };
+    match field {
+        PartField::Idx => part.idx == v.idx,
+        PartField::LocX => part.location.0 == v.location.0,
+        PartField::LocY => part.location.1 == v.location.1,
+        PartField::Rotation => part.rotation == v.rotation,
+        PartField::ScaleX => part.scaling.0 == v.scaling.0,
+        PartField::ScaleY => part.scaling.1 == v.scaling.1,
+        PartField::Flip => part.flip == v.flip,
+        PartField::Parent => part.parent == v.parent,
+        PartField::ParentOffX => part.parent_loc_offset.0 == v.parent_loc_offset.0,
+        PartField::ParentOffY => part.parent_loc_offset.1 == v.parent_loc_offset.1,
+        PartField::ParentRotOff => part.parent_rotation_offset == v.parent_rotation_offset,
+    }
+}
+
+/// Copy one field from the vanilla part.
+fn reset_field(part: &mut Part, vanilla: &Part, field: PartField) {
+    match field {
+        PartField::Idx => part.idx = vanilla.idx,
+        PartField::LocX => part.location.0 = vanilla.location.0,
+        PartField::LocY => part.location.1 = vanilla.location.1,
+        PartField::Rotation => part.rotation = vanilla.rotation,
+        PartField::ScaleX => part.scaling.0 = vanilla.scaling.0,
+        PartField::ScaleY => part.scaling.1 = vanilla.scaling.1,
+        PartField::Flip => part.flip = vanilla.flip,
+        PartField::Parent => part.parent = vanilla.parent,
+        PartField::ParentOffX => part.parent_loc_offset.0 = vanilla.parent_loc_offset.0,
+        PartField::ParentOffY => part.parent_loc_offset.1 = vanilla.parent_loc_offset.1,
+        PartField::ParentRotOff => part.parent_rotation_offset = vanilla.parent_rotation_offset,
+    }
+}
+
+/// Numeric editors for one part, each with a reset-to-vanilla button.
+/// Returns true if any value changed.
+fn part_fields(ui: &mut Ui, part: &mut Part, vanilla: Option<&Part>) -> bool {
     let mut changed = false;
+
+    // Small reset button for one field: enabled only when it differs from vanilla.
+    fn reset_button(ui: &mut Ui, part: &Part, vanilla: Option<&Part>, field: PartField) -> bool {
+        let differs = !field_matches(part, vanilla, field);
+        let response = ui
+            .add_enabled(differs, egui::Button::new("Reset").small())
+            .on_hover_text("Restore this field from the vanilla file");
+        let clicked = response.clicked();
+        ui.end_row();
+        clicked
+    }
+
+    let mut pending: Option<PartField> = None;
     egui::Grid::new("part_fields")
-        .num_columns(2)
+        .num_columns(3)
         .show(ui, |ui| {
             ui.label("tile idx");
             changed |= ui.add(egui::DragValue::new(&mut part.idx)).changed();
-            ui.end_row();
+            if reset_button(ui, part, vanilla, PartField::Idx) {
+                pending = Some(PartField::Idx);
+            }
             ui.label("loc x");
             changed |= ui
                 .add(egui::DragValue::new(&mut part.location.0).speed(0.5))
                 .changed();
-            ui.end_row();
+            if reset_button(ui, part, vanilla, PartField::LocX) {
+                pending = Some(PartField::LocX);
+            }
             ui.label("loc y");
             changed |= ui
                 .add(egui::DragValue::new(&mut part.location.1).speed(0.5))
                 .changed();
-            ui.end_row();
+            if reset_button(ui, part, vanilla, PartField::LocY) {
+                pending = Some(PartField::LocY);
+            }
             ui.label("rotation");
             changed |= ui
                 .add(egui::DragValue::new(&mut part.rotation).speed(0.01))
                 .changed();
-            ui.end_row();
+            if reset_button(ui, part, vanilla, PartField::Rotation) {
+                pending = Some(PartField::Rotation);
+            }
             ui.label("scale x");
             changed |= ui
                 .add(egui::DragValue::new(&mut part.scaling.0).speed(0.01))
                 .changed();
-            ui.end_row();
+            if reset_button(ui, part, vanilla, PartField::ScaleX) {
+                pending = Some(PartField::ScaleX);
+            }
             ui.label("scale y");
             changed |= ui
                 .add(egui::DragValue::new(&mut part.scaling.1).speed(0.01))
                 .changed();
-            ui.end_row();
+            if reset_button(ui, part, vanilla, PartField::ScaleY) {
+                pending = Some(PartField::ScaleY);
+            }
             ui.label("flip");
             changed |= ui
                 .add(egui::DragValue::new(&mut part.flip).range(0..=1))
                 .changed();
-            ui.end_row();
+            if reset_button(ui, part, vanilla, PartField::Flip) {
+                pending = Some(PartField::Flip);
+            }
             ui.label("parent");
             changed |= ui
                 .add(egui::DragValue::new(&mut part.parent).range(-1..=31))
                 .changed();
-            ui.end_row();
+            if reset_button(ui, part, vanilla, PartField::Parent) {
+                pending = Some(PartField::Parent);
+            }
             if part.parent > -1 {
                 ui.label("parent off x");
                 changed |= ui
                     .add(egui::DragValue::new(&mut part.parent_loc_offset.0).speed(0.5))
                     .changed();
-                ui.end_row();
+                if reset_button(ui, part, vanilla, PartField::ParentOffX) {
+                    pending = Some(PartField::ParentOffX);
+                }
                 ui.label("parent off y");
                 changed |= ui
                     .add(egui::DragValue::new(&mut part.parent_loc_offset.1).speed(0.5))
                     .changed();
-                ui.end_row();
+                if reset_button(ui, part, vanilla, PartField::ParentOffY) {
+                    pending = Some(PartField::ParentOffY);
+                }
                 ui.label("parent rot off");
                 changed |= ui
                     .add(egui::DragValue::new(&mut part.parent_rotation_offset).speed(0.01))
                     .changed();
-                ui.end_row();
+                if reset_button(ui, part, vanilla, PartField::ParentRotOff) {
+                    pending = Some(PartField::ParentRotOff);
+                }
             }
         });
+
+    if let (Some(field), Some(v)) = (pending, vanilla) {
+        reset_field(part, v, field);
+        changed = true;
+    }
     changed
 }
 
@@ -538,6 +661,7 @@ fn show_preview_and_timeline(app: &mut ResalinatedApp, ui: &mut Ui) {
             let can_del = app.anim_editor.selected_kf.is_some();
             if ui
                 .add_enabled(can_del, egui::Button::new("- keyframe").small())
+                .on_hover_text("Remove the selected keyframe")
                 .clicked()
             {
                 if let (Some(cd), Some(ki)) = (
