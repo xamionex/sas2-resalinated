@@ -154,7 +154,7 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
         .min_size(min_size)
         .max_size(full_width * 0.8)
         .size_range(min_size..=full_width * 0.8)
-        .show_inside(ui, |ui| {
+        .show(ui, |ui| {
             ui.set_min_width(ui.available_width());
 
             // Multi-selection: edit the common fields of every selected item.
@@ -354,7 +354,7 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
     }
 
     // Central panel: search + list
-    egui::CentralPanel::default().show_inside(ui, |ui| {
+    egui::CentralPanel::default().show(ui, |ui| {
         ui.set_min_width(200.0);
 
         // Search & checkbox
@@ -546,7 +546,18 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
                     if let Some(vanilla) = vanilla {
                         if let Some(&vi) = vanilla.by_name.get(&d.name) {
                             let vdef = &vanilla.loot_defs[vi];
-                            d.to_bytes().ok() != vdef.to_bytes().ok()
+                            let bytes_changed = d.to_bytes().ok() != vdef.to_bytes().ok();
+                            // Magic multipliers live outside the LootDef, so they need a separate check against the magic_slot_overrides map.
+                            // The UI uses 0.0 as the "unchanged" base for damage and 1.0 for cost/cooldown (see the reset buttons in this file).
+                            let magic_changed = app
+                                .magic_slot_overrides
+                                .get(&d.name)
+                                .is_some_and(|slots| {
+                                    slots.values().any(|o| {
+                                        (o.damage - 0.0).abs() > 0.001 || (o.cost - 1.0).abs() > 0.001 || (o.cooldown - 1.0).abs() > 0.001
+                                    })
+                                });
+                            bytes_changed || magic_changed
                         } else {
                             true
                         }
@@ -1153,6 +1164,15 @@ fn paste_flags_to(app: &mut ResalinatedApp, idx: usize) {
     paste_flags_to_def(def, &clip);
 }
 
+/// Baseline override matching the UI's "unchanged" values (damage 0.0, cost/cooldown 1.0).
+fn default_slot_override() -> MagicSlotOverrides {
+    MagicSlotOverrides {
+        damage: 0.0,
+        cost: 1.0,
+        cooldown: 1.0,
+    }
+}
+
 /// 'magic_items': (internal_name, display_title) pairs for all magic-type items in the catalog.
 /// 'copy_candidates': (name, display, type, subtype) for "Copy logic from".
 fn show_lootdef_editor(
@@ -1197,6 +1217,8 @@ fn show_lootdef_editor(
     let selected_sub = def.sub_type;
     let selected_name = def.name.clone();
 
+    let mut reset_requested = false;
+
     egui::ScrollArea::vertical()
         .auto_shrink([false; 2])
         .show(ui, |ui| {
@@ -1207,11 +1229,9 @@ fn show_lootdef_editor(
             );
             ui.heading("Loot Definition");
 
-            if let Some(vanilla_def) = &vanilla {
-                if ui.button("Reset Item to Vanilla").clicked() {
-                    *def = vanilla_def.clone();
-                    return;
-                }
+            if vanilla.is_some() && ui.button("Reset Item to Vanilla").clicked() {
+                reset_requested = true;
+                return;
             }
 
             ui.separator();
@@ -1592,13 +1612,14 @@ fn show_lootdef_editor(
                                     }
                                 });
 
-                                // Magic damage override after each magic slot field
+                                // Magic damage/cost/cooldown overrides.
                                 let slot_id = field.id;
-                                let weapon_overrides = app
+                                let mut slot_override = app
                                     .magic_slot_overrides
-                                    .entry(weapon_name.clone())
-                                    .or_default();
-                                let slot_override = weapon_overrides.entry(slot_id).or_default();
+                                    .get(&weapon_name)
+                                    .and_then(|m| m.get(&slot_id))
+                                    .cloned()
+                                    .unwrap_or_else(default_slot_override);
 
                                 let dmg_label = match slot_id {
                                     14 => "Magic [X] Damage Multiplier:",
@@ -1607,7 +1628,7 @@ fn show_lootdef_editor(
                                     _ => "Magic Damage Multiplier:",
                                 };
 
-                                let changed = (slot_override.damage - 0.0f32).abs() > 0.001;
+                                let changed = slot_override.damage.abs() > 0.001;
                                 let label_rich = if changed {
                                     egui::RichText::new(dmg_label).color(CHANGED_COLOR)
                                 } else {
@@ -1644,6 +1665,26 @@ fn show_lootdef_editor(
                                     &mut slot_override.cooldown,
                                     app.config.drag_value_sensitivity,
                                 );
+
+                                // Write back only if non-default; otherwise remove any stale entry for this slot (and drop the whole weapon entry if it becomes empty).
+                                let is_default = slot_override.damage.abs() <= 0.0001
+                                    && (slot_override.cost - 1.0).abs() <= 0.0001
+                                    && (slot_override.cooldown - 1.0).abs() <= 0.0001;
+                                if is_default {
+                                    if let Some(map) =
+                                        app.magic_slot_overrides.get_mut(&weapon_name)
+                                    {
+                                        map.remove(&slot_id);
+                                        if map.is_empty() {
+                                            app.magic_slot_overrides.remove(&weapon_name);
+                                        }
+                                    }
+                                } else {
+                                    app.magic_slot_overrides
+                                        .entry(weapon_name.clone())
+                                        .or_default()
+                                        .insert(slot_id, slot_override);
+                                }
                             } else {
                                 ui.horizontal(|ui| {
                                     ui.label(label);
@@ -1798,6 +1839,16 @@ fn show_lootdef_editor(
                 }
             });
         });
+
+    // Apply the deferred reset now that `def`'s borrow has been released by the ScrollArea closure.
+    // `app.working_catalog` and `app.magic_slot_overrides` are disjoint fields, so both can be borrowed here without conflict.
+    if reset_requested {
+        if let Some(vdef) = vanilla.as_ref() {
+            let name = def.name.clone();
+            *def = vdef.clone();
+            app.magic_slot_overrides.remove(&name);
+        }
+    }
 
     // "Copy logic from" picker: a searchable popup of same-type items (def borrow released here).
     if app.copy_picker_open {

@@ -17,12 +17,12 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
         .resizable(true)
         .default_size(240.0)
         .min_size(170.0)
-        .show_inside(ui, |ui| {
+        .show(ui, |ui| {
             show_left(app, ui, &game_path);
         });
 
     if app.anim_editor.char_def.is_none() {
-        egui::CentralPanel::default().show_inside(ui, |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             ui.label("Select a character def to edit its animations.");
             if let Some(s) = &app.anim_editor.status {
                 ui.colored_label(Color32::LIGHT_BLUE, s);
@@ -35,11 +35,11 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
         .resizable(true)
         .default_size(320.0)
         .min_size(260.0)
-        .show_inside(ui, |ui| {
+        .show(ui, |ui| {
             show_inspector(app, ui, &game_path);
         });
 
-    egui::CentralPanel::default().show_inside(ui, |ui| {
+    egui::CentralPanel::default().show(ui, |ui| {
         show_preview_and_timeline(app, ui);
     });
 

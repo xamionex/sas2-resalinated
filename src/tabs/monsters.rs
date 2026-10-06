@@ -182,7 +182,7 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
         .min_size(min_size)
         .max_size(full_width * 0.8)
         .size_range(min_size..=full_width * 0.8)
-        .show_inside(ui, |ui| {
+        .show(ui, |ui| {
             ui.set_min_width(ui.available_width());
 
             // Multi-selection: edit the common fields of every selected monster.
@@ -667,7 +667,7 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
     }
 
     // Central panel: search + list
-    egui::CentralPanel::default().show_inside(ui, |ui| {
+    egui::CentralPanel::default().show(ui, |ui| {
         ui.set_min_width(200.0);
 
         // search & checkbox

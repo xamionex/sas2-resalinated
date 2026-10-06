@@ -2267,6 +2267,75 @@ impl ResalinatedApp {
         self.magic_slot_overrides = overrides;
         Ok(())
     }
+
+    fn update_runtime(&mut self, ctx: &egui::Context) {
+        self.monster_texture_cache.update(ctx);
+
+        if self.monster_texture_cache.is_loading() {
+            ctx.request_repaint();
+        }
+    }
+
+    fn update_window_state(&mut self, ctx: &egui::Context) {
+        //if self.active_tab == Tab::Monsters {
+        self.monster_texture_cache.update(ctx);
+        if self.monster_texture_cache.is_loading() {
+            ctx.request_repaint();
+        }
+
+        // Persist window position/size/maximized state when enabled.
+        // Re-arms the throttled config save only when the window state actually changed.
+        if self.config.save_window_position || self.config.save_window_state {
+            let info = ctx.input(|i| i.viewport().clone());
+            let mut changed = false;
+            if self.config.save_window_position {
+                // Position is unavailable on Wayland (winit cannot query it), keep the last known value in that case.
+                if let Some(rect) = info.outer_rect {
+                    let pos = [rect.min.x, rect.min.y];
+                    if self.config.window_pos != Some(pos) {
+                        self.config.window_pos = Some(pos);
+                        changed = true;
+                    }
+                }
+                // Size: prefer inner_rect, fall back to the viewport content rect which is available on all platforms.
+                let size = info
+                    .inner_rect
+                    .map(|r| [r.width(), r.height()])
+                    .or_else(|| {
+                        let r = ctx.viewport_rect();
+                        Some([r.width(), r.height()])
+                    });
+                if let Some(size) = size {
+                    if self.config.window_size != Some(size) {
+                        self.config.window_size = Some(size);
+                        changed = true;
+                    }
+                }
+            }
+            if self.config.save_window_state {
+                let maximized = info.maximized.unwrap_or(false);
+                if self.config.window_maximized != maximized {
+                    self.config.window_maximized = maximized;
+                    changed = true;
+                }
+            }
+            if changed {
+                self.config_save_timer = 0.1;
+            }
+        }
+
+        if self.config_save_timer > 0.0 {
+            self.config_save_timer -= ctx.input(|i| i.stable_dt);
+
+            if self.config_save_timer <= 0.01 {
+                self.config.save();
+                eprintln!("Config saved.");
+                self.config_save_timer = 0.0;
+            }
+        }
+
+        //}
+    }
 }
 
 impl eframe::App for ResalinatedApp {
@@ -2275,6 +2344,11 @@ impl eframe::App for ResalinatedApp {
         let frame_log = std::env::var_os("SAS2_FRAME_LOG").is_some();
         let frame_log_all = matches!(std::env::var("SAS2_FRAME_LOG").as_deref(), Ok("all"));
         let frame_start = std::time::Instant::now();
+
+        let ctx = ui.ctx();
+
+        self.update_runtime(ctx);
+        self.update_window_state(ctx);
 
         if self.item_atlas.is_none() {
             if let Some(game_path) = self.config.game_path.clone() {
@@ -2293,7 +2367,7 @@ impl eframe::App for ResalinatedApp {
             }
         }
 
-        egui::CentralPanel::default().show_inside(ui, |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             // Menu bar
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button("File", |ui| {
@@ -2389,66 +2463,5 @@ impl eframe::App for ResalinatedApp {
                 eprintln!("[frame] ui {:>7.2}ms dt {:>7.2}ms {}", ms, dt_ms, self.active_tab.name());
             }
         }
-    }
-
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        //if self.active_tab == Tab::Monsters {
-        self.monster_texture_cache.update(ctx);
-        if self.monster_texture_cache.is_loading() {
-            ctx.request_repaint();
-        }
-
-        // Persist window position/size/maximized state when enabled.
-        // Re-arms the throttled config save only when the window state actually changed.
-        if self.config.save_window_position || self.config.save_window_state {
-            let info = ctx.input(|i| i.viewport().clone());
-            let mut changed = false;
-            if self.config.save_window_position {
-                // Position is unavailable on Wayland (winit cannot query it), keep the last known value in that case.
-                if let Some(rect) = info.outer_rect {
-                    let pos = [rect.min.x, rect.min.y];
-                    if self.config.window_pos != Some(pos) {
-                        self.config.window_pos = Some(pos);
-                        changed = true;
-                    }
-                }
-                // Size: prefer inner_rect, fall back to the viewport content rect which is available on all platforms.
-                let size = info
-                    .inner_rect
-                    .map(|r| [r.width(), r.height()])
-                    .or_else(|| {
-                        let r = ctx.viewport_rect();
-                        Some([r.width(), r.height()])
-                    });
-                if let Some(size) = size {
-                    if self.config.window_size != Some(size) {
-                        self.config.window_size = Some(size);
-                        changed = true;
-                    }
-                }
-            }
-            if self.config.save_window_state {
-                let maximized = info.maximized.unwrap_or(false);
-                if self.config.window_maximized != maximized {
-                    self.config.window_maximized = maximized;
-                    changed = true;
-                }
-            }
-            if changed {
-                self.config_save_timer = 0.1;
-            }
-        }
-
-        if self.config_save_timer > 0.0 {
-            self.config_save_timer -= ctx.input(|i| i.stable_dt);
-
-            if self.config_save_timer <= 0.01 {
-                self.config.save();
-                eprintln!("Config saved.");
-                self.config_save_timer = 0.0;
-            }
-        }
-
-        //}
     }
 }

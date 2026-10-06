@@ -517,7 +517,7 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
 
     egui::CentralPanel::default()
         .frame(egui::Frame::central_panel(&ui.style()).inner_margin(2.0))
-        .show_inside(ui, |ui| {
+        .show(ui, |ui| {
         if app.shop_all_shops {
             ui.heading("All Shops");
             ui.label(
@@ -534,7 +534,7 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
                 .default_size(300.0)
                 .min_size(220.0)
                 .max_size(ui.available_width() * 0.5)
-                .show_inside(ui, |ui| {
+                .show(ui, |ui| {
                     ui.set_min_width(ui.available_width());
                     // With a multi-selection active, hide the single-item header so it doesn't give the false impression that edits apply to one item.
                     let multi_count = app.shop_all_selected_multi.len();
@@ -696,7 +696,7 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
             // Central: the selectable item grid.
             egui::CentralPanel::default()
                 .frame(egui::Frame::central_panel(&ui.style()).inner_margin(2.0))
-                .show_inside(ui, |ui| {
+                .show(ui, |ui| {
                     // Multi-select toolbar for the All Shops grid, above the grid so it is always visible.
                     let multi_count = app.shop_all_selected_multi.len();
                     if multi_count > 1 {
@@ -771,7 +771,7 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
             .default_size(300.0)
             .min_size(220.0)
             .max_size(ui.available_width() * 0.5)
-            .show_inside(ui, |ui| {
+            .show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
 
                 // Multi-selection: remove every selected entry from this merchant.
@@ -1049,7 +1049,7 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
         // Central: one flat shelf per merchant (all shop nodes merged).
         egui::CentralPanel::default()
             .frame(egui::Frame::central_panel(&ui.style()).inner_margin(2.0))
-            .show_inside(ui, |ui| {
+            .show(ui, |ui| {
             // Flatten all shop nodes into (node_idx, entry_idx, flag, item).
             let mut flat: Vec<(usize, usize, String, String)> = Vec::new();
             for (node_idx, node) in npc_owned.nodes.iter().enumerate() {

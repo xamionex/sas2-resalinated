@@ -18,7 +18,7 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
         .default_size(left_width)
         .min_size(min_size)
         .max_size(full_width * 0.6)
-        .show_inside(ui, |ui| {
+        .show(ui, |ui| {
             ui.heading("Available Presets");
             let available: Vec<(String, String)> = app
                 .preset_manager
@@ -110,7 +110,7 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
     }
 
     // Right panel: enabled presets
-    egui::CentralPanel::default().show_inside(ui, |ui| {
+    egui::CentralPanel::default().show(ui, |ui| {
         ui.heading("Enabled Presets (ordered)");
 
         ui.horizontal(|ui| {

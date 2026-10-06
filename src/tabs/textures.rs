@@ -35,7 +35,7 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
         .resizable(true)
         .default_size((full_width * 0.32).max(280.0))
         .min_size(260.0)
-        .show_inside(ui, |ui| {
+        .show(ui, |ui| {
             show_cell_editor(app, ui, &game_path);
         });
 
@@ -44,12 +44,12 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
         .resizable(true)
         .default_size(220.0)
         .min_size(160.0)
-        .show_inside(ui, |ui| {
+        .show(ui, |ui| {
             show_texture_list(app, ui, &game_path);
         });
 
     // Center: sheet + overlay.
-    egui::CentralPanel::default().show_inside(ui, |ui| {
+    egui::CentralPanel::default().show(ui, |ui| {
         show_sheet_viewer(app, ui);
     });
 
