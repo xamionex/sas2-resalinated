@@ -93,6 +93,10 @@ pub struct ResalinatedConfig {
     /// Hazeburnt Spawns tab: list every regular enemy, not only the hazeburnt variants.
     #[serde(default)]
     pub hazeburnt_show_all_monsters: bool,
+
+    /// Custom UI theme (Settings -> UI Theme). None = follow the system / egui default theme.
+    #[serde(default)]
+    pub theme: Option<crate::theme::Theme>,
 }
 
 pub fn default_true() -> bool {
@@ -125,6 +129,7 @@ impl Default for ResalinatedConfig {
             projectile_toggle_on_click: false,
             hazeburnt_toggle_on_click: false,
             hazeburnt_show_all_monsters: false,
+            theme: None,
         }
     }
 }

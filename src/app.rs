@@ -167,7 +167,7 @@ pub struct ResalinatedApp {
     pub hazeburnt_selected_area: i32,
     pub hazeburnt_search: String,
     /// How the Hazeburnt Spawns grid groups its monsters.
-    pub hazeburnt_group_by: crate::tabs::hazeburnt_spawns::GroupBy,
+    pub hazeburnt_group_by: hazeburnt_spawns::GroupBy,
     /// Right-button gesture state and multi-selection of the Hazeburnt Spawns grid.
     pub hazeburnt_grid_sel: crate::tabs::multisel::GridSel<usize>,
     pub hazeburnt_selected_multi: HashSet<usize>,
@@ -237,6 +237,12 @@ pub struct ResalinatedApp {
     pub projectile_icons: Option<crate::projectile_icons::ProjectileIcons>,
     pub monster_texture_cache: MonsterTextureCache,
     pub settings_open: bool,
+
+    // UI theme (Settings -> UI Theme)
+    pub theme: crate::theme::Theme,
+    /// True once the user customized the theme; then it is applied and stored in the config.
+    pub theme_customized: bool,
+    pub theme_window_open: bool,
     pub catalog_error: Option<String>,
     pub monster_catalog_error: Option<String>,
     pub config_save_timer: f32,
@@ -316,6 +322,8 @@ impl ResalinatedApp {
     /// Construct the app with a pre-loaded config (used by main.rs so window position/state can be applied before the window opens).
     pub fn with_config(config: ResalinatedConfig) -> Self {
         let game_path = config.game_path.clone();
+        let theme_customized = config.theme.is_some();
+        let theme = config.theme.clone().unwrap_or_default();
         let mut app = Self {
             config,
             vanilla_data: None,
@@ -336,7 +344,7 @@ impl ResalinatedApp {
             hazeburnt_spawns_initialized: false,
             hazeburnt_selected_area: 1,
             hazeburnt_search: String::new(),
-            hazeburnt_group_by: crate::tabs::hazeburnt_spawns::GroupBy::Role,
+            hazeburnt_group_by: hazeburnt_spawns::GroupBy::Role,
             hazeburnt_grid_sel: crate::tabs::multisel::GridSel::default(),
             hazeburnt_selected_multi: HashSet::new(),
             hazeburnt_selected_single: None,
@@ -387,6 +395,11 @@ impl ResalinatedApp {
             projectile_icons: None,
             monster_texture_cache: MonsterTextureCache::new(),
             settings_open: false,
+
+            theme,
+            theme_customized,
+            theme_window_open: false,
+
             catalog_error: None,
             monster_catalog_error: None,
             config_save_timer: 0.0,
@@ -912,7 +925,7 @@ impl ResalinatedApp {
         let Some(cat) = &self.working_monster_catalog else {
             return;
         };
-        for (area, names) in crate::tabs::hazeburnt_spawns::vanilla_areas(cat) {
+        for (area, names) in hazeburnt_spawns::vanilla_areas(cat) {
             self.hazeburnt_spawns
                 .entry(area)
                 .or_default()
@@ -1012,7 +1025,7 @@ impl ResalinatedApp {
             }
         } else if !merged.is_empty() {
             if let Some(cat) = &self.working_monster_catalog {
-                for (area, names) in crate::tabs::hazeburnt_spawns::vanilla_areas(cat) {
+                for (area, names) in hazeburnt_spawns::vanilla_areas(cat) {
                     merged.entry(area).or_insert_with(|| names.into_iter().collect());
                 }
             }
@@ -2252,6 +2265,25 @@ impl ResalinatedApp {
         self.settings_open = is_open;
     }
 
+    pub fn show_theme_window(&mut self, ctx: &egui::Context) {
+        if !self.theme_window_open {
+            return;
+        }
+
+        let response =
+            crate::theme::show_theme_window(ctx, &mut self.theme_window_open, &mut self.theme);
+        if response.reset_default {
+            self.theme_customized = false;
+            self.config.theme = None;
+            crate::theme::Theme::reset_context(ctx);
+            self.config_save_timer = 0.1;
+        } else if response.changed {
+            self.theme_customized = true;
+            self.config.theme = Some(self.theme.clone());
+            self.config_save_timer = 0.1;
+        }
+    }
+
     /// Serialize the magic_slot_overrides map to a JSON byte vector.
     pub fn save_magic_overrides_to_bytes(&self) -> Result<Vec<u8>, String> {
         let json = serde_json::to_vec(&self.magic_slot_overrides)
@@ -2347,6 +2379,13 @@ impl eframe::App for ResalinatedApp {
 
         let ctx = ui.ctx();
 
+        // Apply the custom theme (or keep tracking the system theme until customized).
+        if self.theme_customized {
+            self.theme.apply(ctx);
+        } else {
+            self.theme = crate::theme::Theme::from_visuals(&ui.style().visuals);
+        }
+
         self.update_runtime(ctx);
         self.update_window_state(ctx);
 
@@ -2387,10 +2426,15 @@ impl eframe::App for ResalinatedApp {
                         self.settings_open = true;
                         ui.close();
                     }
+                    if ui.button("UI Theme").clicked() {
+                        self.theme_window_open = true;
+                        ui.close();
+                    }
                 });
             });
 
             self.show_settings_window(ui.ctx());
+            self.show_theme_window(ui.ctx());
 
             // Game folder status line
             if let Some(game_path) = &self.config.game_path {
