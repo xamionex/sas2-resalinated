@@ -12,6 +12,7 @@ mod preset;
 mod projectile_icons;
 pub mod tabs;
 pub mod texture_editor;
+mod theme;
 
 use crate::app::ResalinatedApp;
 use crate::config::ResalinatedConfig;
