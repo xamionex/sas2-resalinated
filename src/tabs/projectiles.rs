@@ -134,6 +134,7 @@ struct SideActions {
 /// filter and selection ignored).
 fn side_controls(
     ui: &mut Ui,
+    title: &str,
     search: &mut String,
     hint: &str,
     total: usize,
@@ -142,7 +143,9 @@ fn side_controls(
     config_save_timer: &mut f32,
 ) -> SideActions {
     let mut actions = SideActions::default();
-    ui.horizontal(|ui| {
+    // Wrapped so the pinned row folds instead of being clipped when the window is narrow.
+    ui.horizontal_wrapped(|ui| {
+        ui.strong(title);
         ui.label("Search:");
         ui.add(
             egui::TextEdit::singleline(search)
@@ -277,57 +280,110 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
 
     let icon_size = ui.style().text_styles[&egui::TextStyle::Body].size * 3.4;
 
+    // The control rows sit outside the ScrollArea so they stay in place while the tile grids scroll (same pinned-control layout as the Hazeburnt Spawns tab).
+    let player_keys: Vec<String> = player_items
+        .magic
+        .iter()
+        .chain(&player_items.ranged)
+        .chain(&player_items.thrown)
+        .map(|e| e.key.clone())
+        .collect();
+    let player_selected: Vec<String> = app
+        .projectile_selected_multi
+        .iter()
+        .chain(app.projectile_selected_single.iter())
+        .filter(|i| **i < player_keys.len())
+        .filter_map(|i| player_keys.get(*i).cloned())
+        .collect();
+    let player_actions = side_controls(
+        ui,
+        "Player Projectiles",
+        &mut app.pierce_item_search,
+        "item name",
+        player_keys.len(),
+        player_selected.len(),
+        &mut app.config.projectile_toggle_on_click,
+        &mut app.config_save_timer,
+    );
+    if player_actions.enable_selected || player_actions.disable_selected {
+        for key in &player_selected {
+            if player_actions.enable_selected {
+                app.pierce_player.insert(key.clone());
+            }
+            if player_actions.disable_selected {
+                app.pierce_player.remove(key);
+            }
+        }
+    }
+    if player_actions.enable_all {
+        for key in &player_keys {
+            app.pierce_player.insert(key.clone());
+        }
+    }
+    if player_actions.disable_all {
+        for key in &player_keys {
+            app.pierce_player.remove(key);
+        }
+    }
+    ui.add_space(4.0);
+
+    // Enemy controls
+    let player_count = player_keys.len();
+    let monster_keys: Vec<String> = monsters.iter().map(|m| m.key.clone()).collect();
+    let monster_selected: Vec<String> = app
+        .projectile_selected_multi
+        .iter()
+        .chain(app.projectile_selected_single.iter())
+        .filter(|i| **i >= player_count)
+        .filter_map(|i| monster_keys.get(*i - player_count).cloned())
+        .collect();
+    let monster_actions = side_controls(
+        ui,
+        "Enemy Projectiles",
+        &mut app.pierce_enemy_search,
+        "monster name",
+        monster_keys.len(),
+        monster_selected.len(),
+        &mut app.config.projectile_toggle_on_click,
+        &mut app.config_save_timer,
+    );
+    ui.label(
+        egui::RichText::new(format!(
+            "{} of {} shown monsters piercing",
+            monsters
+                .iter()
+                .filter(|m| app.pierce_enemy.contains(&m.key))
+                .count(),
+            monsters.len()
+        ))
+        .color(egui::Color32::GRAY),
+    );
+    if monster_actions.enable_selected || monster_actions.disable_selected {
+        for key in &monster_selected {
+            if monster_actions.enable_selected {
+                app.pierce_enemy.insert(key.clone());
+            }
+            if monster_actions.disable_selected {
+                app.pierce_enemy.remove(key);
+            }
+        }
+    }
+    if monster_actions.enable_all {
+        for key in &monster_keys {
+            app.pierce_enemy.insert(key.clone());
+        }
+    }
+    if monster_actions.disable_all {
+        for key in &monster_keys {
+            app.pierce_enemy.remove(key);
+        }
+    }
+    ui.separator();
+
     egui::ScrollArea::both()
         .scroll_source(crate::tabs::multisel::grid_scroll_source(ui))
         .auto_shrink([false; 2])
         .show(ui, |ui| {
-            // ---------------- Player ----------------
-            ui.heading("Player Projectiles");
-            let player_keys: Vec<String> = player_items
-                .magic
-                .iter()
-                .chain(&player_items.ranged)
-                .chain(&player_items.thrown)
-                .map(|e| e.key.clone())
-                .collect();
-            let player_selected: Vec<String> = app
-                .projectile_selected_multi
-                .iter()
-                .chain(app.projectile_selected_single.iter())
-                .filter(|i| **i < player_keys.len())
-                .filter_map(|i| player_keys.get(*i).cloned())
-                .collect();
-            let player_actions = side_controls(
-                ui,
-                &mut app.pierce_item_search,
-                "item name",
-                player_keys.len(),
-                player_selected.len(),
-                &mut app.config.projectile_toggle_on_click,
-                &mut app.config_save_timer,
-            );
-
-            if player_actions.enable_selected || player_actions.disable_selected {
-                for key in &player_selected {
-                    if player_actions.enable_selected {
-                        app.pierce_player.insert(key.clone());
-                    }
-                    if player_actions.disable_selected {
-                        app.pierce_player.remove(key);
-                    }
-                }
-            }
-            if player_actions.enable_all {
-                for key in &player_keys {
-                    app.pierce_player.insert(key.clone());
-                }
-            }
-            if player_actions.disable_all {
-                for key in &player_keys {
-                    app.pierce_player.remove(key);
-                }
-            }
-
             let mut gsel = std::mem::take(&mut app.projectile_grid_sel);
             gsel.begin(ui);
             gsel.display_order.clear();
@@ -338,7 +394,7 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
                 .chain(&player_items.ranged)
                 .chain(&player_items.thrown)
                 .map(|e| e.key.clone())
-                .chain(monsters.iter().map(|m| m.key.clone()))
+                .chain(monster_keys.iter().cloned())
                 .collect();
             gsel.display_order.extend(0..all_keys.len());
 
@@ -416,58 +472,6 @@ pub fn show(app: &mut ResalinatedApp, ui: &mut Ui) {
             }
 
             ui.separator();
-
-            // ---------------- Enemy ----------------
-            ui.heading("Enemy Projectiles");
-            let player_count = player_keys.len();
-            let monster_keys: Vec<String> = monsters.iter().map(|m| m.key.clone()).collect();
-            let monster_selected: Vec<String> = app
-                .projectile_selected_multi
-                .iter()
-                .chain(app.projectile_selected_single.iter())
-                .filter(|i| **i >= player_count)
-                .filter_map(|i| monster_keys.get(*i - player_count).cloned())
-                .collect();
-            let monster_actions = side_controls(
-                ui,
-                &mut app.pierce_enemy_search,
-                "monster name",
-                monster_keys.len(),
-                monster_selected.len(),
-                &mut app.config.projectile_toggle_on_click,
-                &mut app.config_save_timer,
-            );
-            ui.label(
-                egui::RichText::new(format!(
-                    "{} of {} shown monsters piercing",
-                    monsters
-                        .iter()
-                        .filter(|m| app.pierce_enemy.contains(&m.key))
-                        .count(),
-                    monsters.len()
-                ))
-                .color(egui::Color32::GRAY),
-            );
-            if monster_actions.enable_selected || monster_actions.disable_selected {
-                for key in &monster_selected {
-                    if monster_actions.enable_selected {
-                        app.pierce_enemy.insert(key.clone());
-                    }
-                    if monster_actions.disable_selected {
-                        app.pierce_enemy.remove(key);
-                    }
-                }
-            }
-            if monster_actions.enable_all {
-                for key in &monster_keys {
-                    app.pierce_enemy.insert(key.clone());
-                }
-            }
-            if monster_actions.disable_all {
-                for key in &monster_keys {
-                    app.pierce_enemy.remove(key);
-                }
-            }
 
             ui.add_space(6.0);
             ui.label(
